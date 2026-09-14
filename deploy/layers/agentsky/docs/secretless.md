@@ -3,7 +3,8 @@
 Replacing long-lived static secrets with federated, short-lived credentials.
 
 This is the implementation plan: the full inventory, the mechanism analysis, and
-the phasing. The proposal for upstream is
+the phasing. File and line citations are against the tree at upstream
+`9e1ac06`, synced on 2026-09-14. The proposal for upstream is
 [`adrs/secretless-credentials.md`](../adrs/secretless-credentials.md), the same
 argument at proposal length. Keep the two in step when findings change.
 
@@ -27,13 +28,14 @@ per-service secret routing at all. That gap shapes Phase A.
 The CLI declares 41 first-party secret names[^specs]. Nine of those are not
 secret material — `PUBLIC_API_URL`, both CA certificates, `OIDC_CLIENT_ID`,
 `PORTAL_EXPECTED_TEAM_ID`, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, `SMTP_HOST`,
-`SMTP_USERNAME` — leaving 32 real secrets. Eleven more live outside that list:
+`SMTP_USERNAME` — leaving 32 real secrets. Twelve more live outside that list:
 `FLY_SANDBOX_API_TOKEN`, `SECURITY_SCREEN_PROXY_TOKEN`, `NPM_TOKEN` in the
 release workflow, two that core requires but the CLI never declares
 (`MODEL_GATEWAY_API_KEY`[^gateway] and `DEPLOY_APPS_SESSION_SECRET`[^deployapps]),
 and two that only exist on Kubernetes: `imagePullSecrets` and the ingress TLS
-key, and four more connector client secrets the OAuth layer reads but the CLI never
-declares[^undeclaredoauth]. Of these, only the TLS key expires on its own,
+key, four more connector client secrets the OAuth layer reads but the CLI never
+declares[^undeclaredoauth], and the trusted-entry client secret the portal
+reads[^trustedentry]. Of these, only the TLS key expires on its own,
 because cert-manager rotates it; the rest do not.
 
 The deploy plane is already in better shape than the runtime plane. Deploying to
@@ -166,7 +168,15 @@ mints a signed user identity and core and admin verify it[^portalmint]. It is a
 genuinely distinct key — core refuses to start in production if it is unset or
 equal to `CORE_SIGNING_SECRET` or `CAPABILITY_SECRET`[^portalguard] — but it is
 still symmetric, still shared across four services, and still rotated
-atomically.
+atomically. Upstream's trusted-entry PoC adds a third use of it: after a
+verified trusted OIDC sign-in the portal signs a purpose-bound, 60-second,
+single-use HS256 assertion with `PORTAL_IDENTITY_SECRET` and core verifies it
+before granting organization admin, refusing unless the secret is at least 32
+characters, distinct from `CORE_SIGNING_SECRET`, and backed by a durable replay
+store[^trustedadmin]. Same key, same direction. That assertion — `purpose`,
+`exp` within a minute, `jti` claimed once in a durable store — is the exact
+shape B1's per-call tokens and B5's per-exchange tokens need, and it now exists
+in the tree.
 
 ### The rotation trap
 
@@ -482,7 +492,14 @@ is calling, the user claims are a payload that SA asserts, and the authorization
 question becomes "may this SA assert user identities?" — a per-surface
 permission, not a second key. On ECS the same holds under KMS: the portal holds
 `kms:Sign` on its key, core holds the public half. Under no scheme does core
-need a signing key for this.
+need a signing key for this. The trusted-entry admin assertion collapses the
+same way: once core knows the calling ServiceAccount is the portal, the claim
+that a trusted sign-in just succeeded is a payload that account asserts, and
+its single-use `jti` moves from the durable replay store to the same TokenReview
+budget. The portal already verifies OIDC id_tokens against a JWKS for both of
+its sign-in routes[^portaljwks]; core's B1 verifier for the cluster, STS, and
+Fly issuers is that operation with a different issuer, and the chassis is the
+sanctioned place to share it.
 
 **`AUTH_CLIENT_SECRET` stops being a deployed secret.** In the embedded topology
 both halves of the loopback run in the portal pod, so the portal mints it at
@@ -792,7 +809,10 @@ living only in the rotation Job and ESO carrying the child.
 
 **OAuth client secrets: ESO-carried, human-rotated at the IdP.** This group is
 the connector client secrets — Google, Dropbox, Linear, and the four the CLI never declares (`SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`) — and the
-portal's `OIDC_CLIENT_SECRET` when an external identity provider is in use. The
+portal's `OIDC_CLIENT_SECRET` when an external identity provider is in use,
+and `PORTAL_TRUSTED_OIDC_CLIENT_SECRET` for the trusted-entry PoC, which is the
+same kind of credential for a second provider and already does PKCE S256 on its
+authorization-code flow. The
 previous revision put these under "can never meet the rotation bar," which
 conflated two things. Rotation cannot be _automated_, because each IdP mints
 the secret in a dashboard with no API to mint another. But the secret can be
@@ -834,7 +854,8 @@ map.
 
 For all of it: declare `MODEL_GATEWAY_API_KEY`, `DEPLOY_APPS_SESSION_SECRET`,
 `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`,
-`GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` in the CLI spec list. A
+`GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`, and
+`PORTAL_TRUSTED_OIDC_CLIENT_SECRET` in the CLI spec list. A
 secret core requires but the deployment tooling has never heard of cannot be
 validated, routed, or rotated.
 
@@ -1057,9 +1078,9 @@ folded into a phase or recorded above as a decision.
 
 [^specs]: `cli/src/secrets.ts:43` — `FIRST_PARTY_SECRET_SPECS`, the typed schema from which `.env.example`, Terraform `secret_names`, and per-task ECS secret routing are derived. Deploy-side only; nothing under `src/` imports it.
 
-[^gateway]: `src/config.ts:934` — `${name} is required when model gateway routing is configured`, used as `apiKey` at `:951`. Not declared in `cli/src/secrets.ts`.
+[^gateway]: `src/config.ts:940` — `${name} is required when model gateway routing is configured`, used as `apiKey` at `:957`. Not declared in `cli/src/secrets.ts`.
 
-[^deployapps]: `src/config.ts:609` — a cookie-signing secret that falls back to `PORTAL_SESSION_SECRET`. Not declared in `cli/src/secrets.ts`.
+[^deployapps]: `src/config.ts:615` — a cookie-signing secret that falls back to `PORTAL_SESSION_SECRET`. Not declared in `cli/src/secrets.ts`.
 
 [^oidctrust]: `cli/src/backends/aws.ts:2973` — `assertGithubDeployTrust` requires exactly one trust statement, `sts:AssumeRoleWithWebIdentity` only, a pinned `sts.amazonaws.com` audience, and subjects without wildcards. The role itself is `cli/templates/aws/main.tf:311`.
 
@@ -1075,19 +1096,19 @@ folded into a phase or recorded above as a decision.
 
 [^sourceauth]: `src/auth/source-auth.ts:36` — `verifySignature` checks signature, timestamp freshness, and replay only. No caller identity is carried or checked.
 
-[^portalmint]: `mintPortalIdentity` is called in the portal at `plugins/portal/src/index.ts:232`, `:740`, `:914` and `plugins/portal/src/proxy.ts:120`, `:191`; `verifyPortalIdentity` runs in core at `src/api/server.ts:293` and `src/api/routes/deployments.ts:66`, and in admin at `plugins/admin/src/index.ts:86`.
+[^portalmint]: `mintPortalIdentity` is called in the portal at `plugins/portal/src/index.ts:250`, `:761`, `:936` and `plugins/portal/src/proxy.ts:120`, `:191`; `verifyPortalIdentity` runs in core at `src/api/server.ts:293` and `src/api/routes/deployments.ts:66`, and in admin at `plugins/admin/src/index.ts:86`.
 
 [^portalguard]: `src/api/server.ts:536` — under `production`, core throws if `PORTAL_IDENTITY_SECRET` or `CAPABILITY_SECRET` is unset, equals `CORE_SIGNING_SECRET`, or equals the other.
 
-[^loadconfig]: `src/config.ts:987` — `loadConfig(env = process.env)` reads every secret once at boot.
+[^loadconfig]: `src/config.ts:993` — `loadConfig(env = process.env)` reads every secret once at boot.
 
 [^helmchecksum]: `deploy/helm/templates/deployment.yaml:26` — the annotation hashes the chart's own `secret.yaml` render, so a change to an ESO-managed Secret does not alter it.
 
 [^flytokens]: `cli/src/secrets.ts:119` (`fly tokens create org -o <fly-org> -x 8760h`) and `cli/src/preflight.ts:96` (`fly tokens create deploy -a <app> -x 8760h`).
 
-[^secretsource]: `src/wiring.ts:999` builds the source and passes it only to `createConnectorClientResolver`. Other importers are `src/connectors/oauth.ts:457`, `src/connectors/connector-client-store.ts:127`, `src/credentials/connector-token.ts:16`, `src/api/routes/connectors.ts:48`. Core's own secrets are read from `process.env` in `src/config.ts` — `:1209` `DATABASE_URL`, `:1320` `CORE_SIGNING_SECRET`, `:1328` `CONNECTOR_SECRET_KEY`, `:1339` `SKILL_SIGNING_SECRET`.
+[^secretsource]: `src/wiring.ts:1009` builds the source and passes it only to `createConnectorClientResolver`. Other importers are `src/connectors/oauth.ts:457`, `src/connectors/connector-client-store.ts:127`, `src/credentials/connector-token.ts:16`, `src/api/routes/connectors.ts:48`. Core's own secrets are read from `process.env` in `src/config.ts` — `:1222` `DATABASE_URL`, `:1335` `CORE_SIGNING_SECRET`, `:1343` `CONNECTOR_SECRET_KEY`, `:1354` `SKILL_SIGNING_SECRET`.
 
-[^secretsbackend]: `src/config.ts:890` — `SECRETS_BACKEND` accepts `env` or `aws` only.
+[^secretsbackend]: `src/config.ts:896` — `SECRETS_BACKEND` accepts `env` or `aws` only.
 
 [^checklive]: `cli/src/cli.ts:137` describes `--live` as "verify running identity, rendered config, and health"; the implementation emits `fly.live-readiness` / `<target>.live-drift` clauses and throws for unsupported targets at `:334`.
 
@@ -1107,7 +1128,7 @@ folded into a phase or recorded above as a decision.
 
 [^providers]: `cli/src/config.ts:116` — `MODEL_PROVIDERS = ["anthropic", "openai", "openrouter"]`.
 
-[^porterboth]: `src/config.ts:513` (`porterDeployEnv`) and `:530` (`porterSandboxEnv`) both read `PORTER_DEPLOY_API_TOKEN`; the first serves `DEPLOY_PROVIDER=porter`, the second `SANDBOX_BACKEND=porter`.
+[^porterboth]: `src/config.ts:519` (`porterDeployEnv`) and `:536` (`porterSandboxEnv`) both read `PORTER_DEPLOY_API_TOKEN`; the first serves `DEPLOY_PROVIDER=porter`, the second `SANDBOX_BACKEND=porter`.
 
 [^deployproviders]: `src/deploy/` holds `aws-`, `docker-`, `fly-`, and `porter-deploy-provider.ts`; there is no Kubernetes provider.
 
@@ -1115,13 +1136,13 @@ folded into a phase or recorded above as a decision.
 
 [^helmalias]: `deploy/helm/templates/secret.yaml:18` renders `OIDC_CLIENT_SECRET` from `AUTH_CLIENT_SECRET` when the former is unset.
 
-[^piharness]: `src/harness/pi-harness.ts:396` sends the key as `x-api-key`; `:1141` pushes per-provider keys into the Pi runtime.
+[^piharness]: `src/harness/pi-harness.ts:399` sends the key as `x-api-key`; `:1181` pushes per-provider keys into the Pi runtime.
 
 [^claudeharness]: `src/harness/claude-harness.ts:98` lists `ANTHROPIC_AUTH_TOKEN` among the variables passed through to the child process.
 
 [^modelgate]: `src/deployment/secret-schema.ts:37` — `ANTHROPIC_API_KEY` is required when the `model-anthropic` gate is on.
 
-[^clientresolver]: `src/connectors/connector-client-store.ts:124` — `createConnectorClientResolver` returns the durable-store record when one exists and otherwise delegates to `createSecretClientResolver(secretSource)`; `src/wiring.ts:1006` wires it with the layered `secretSource`.
+[^clientresolver]: `src/connectors/connector-client-store.ts:124` — `createConnectorClientResolver` returns the durable-store record when one exists and otherwise delegates to `createSecretClientResolver(secretSource)`; `src/wiring.ts:1016` wires it with the layered `secretSource`.
 
 [^pkce]: `src/connectors/oauth.ts:428` sets `pkce: true` for X; `:560` sends `code_challenge` with `S256`; `:112` always includes `client_secret` in the token-exchange body; `:466` throws when no secret resolves.
 
@@ -1139,7 +1160,7 @@ folded into a phase or recorded above as a decision.
 
 [^plainhttp]: `deploy/helm/templates/deployment.yaml:50` — `CORE_API_URL` is rendered as `http://…`; `:57` and `:58` do the same for `WEB_UI_UPSTREAM` and `ADMIN_UPSTREAM`.
 
-[^replay]: `src/auth/source-auth.ts:56` — `createSourceAuth` verifies the signature within a replay window and then claims `eventId` in a dedupe store; a duplicate is rejected as already processed.
+[^replay]: `src/auth/source-auth.ts:57` — `createSourceAuth` verifies the signature within a replay window and then claims `eventId` in a dedupe store; a duplicate is rejected as already processed.
 
 [^stswebid]: Anthropic, _Use WIF with AWS_, <https://platform.claude.com/docs/en/manage-claude/wif-providers/aws> — documents `aws sts get-web-identity-token --audience … --signing-algorithm RS256 --duration-seconds …`, the account-level outbound-federation flag, the `sts:GetWebIdentityToken` permission, the per-account issuer URL with discovery JWKS, and the `sub` and `https://sts.amazonaws.com/` claim shapes. Fetched from this session; the AWS STS reference itself was not reachable.
 
@@ -1151,7 +1172,7 @@ folded into a phase or recorded above as a decision.
 
 [^openaiwif]: OpenAI Python SDK, `README.md` on `main` — section "Workload Identity Authentication": `k8s_service_account_token_provider`, `gcp_id_token_provider(audience="https://api.openai.com/v1")`, `azure_managed_identity_token_provider`, a custom `token_type: "jwt"` provider, `refresh_buffer_seconds` default 1200; `_client.py` takes `workload_identity`; the Node client's `workloadIdentity` is "OAuth2 token exchange authentication. Mutually exclusive with `apiKey`." Changelog: short-lived token support in 2.31.0 (2026-04-08). OpenAI docs: <https://developers.openai.com/api/docs/guides/workload-identity-federation> and the Kubernetes guide beneath it, which state RFC 8693 exchange, OIDC discovery with a 600-second JWKS cache, a Platform service account as the principal, and that legacy Secret-stored tokens are unsupported. The SDK sources were fetched from this session; the docs were read through search excerpts.
 
-[^openaibase]: `src/model/provider-endpoints.ts:17` maps the OpenAI provider to `OPENAI_BASE_URL`; `src/config.ts:1185` sets it on the Codex child environment; `src/harness/codex-harness.ts:233` passes it through.
+[^openaibase]: `src/model/provider-endpoints.ts:18` maps the OpenAI provider to `OPENAI_BASE_URL`; `src/config.ts:1194` sets it on the Codex child environment; `src/harness/codex-harness.ts:233` passes it through.
 
 [^codexauth]: `src/harness/codex-harness.ts:272` — when `OPENAI_API_KEY` is set, the harness writes `{ auth_mode: "apikey", OPENAI_API_KEY }` into the child's `auth.json`.
 
@@ -1159,6 +1180,14 @@ folded into a phase or recorded above as a decision.
 
 [^rdsproxye2e]: AWS SDK for Go v2, `service/rds/api_op_CreateDBProxy.go` on `main`, doc comment on `DefaultAuthScheme`: "The default authentication scheme that the proxy uses for client connections to the proxy and connections from the proxy to the underlying database. Valid values are NONE and IAM_AUTH. When set to IAM_AUTH, the proxy uses end-to-end IAM authentication to connect to the database." Fetched from this session. Announced in _Amazon RDS Proxy announces support for end-to-end IAM authentication_, AWS What's New, September 2025, for MySQL and PostgreSQL in all RDS Proxy regions.
 
-[^ecstaskprot]: `src/wiring.ts:1961` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
+[^trustedentry]: `plugins/portal/src/trusted-entry.ts:7` reads `PORTAL_TRUSTED_OIDC_CLIENT_SECRET`, requires at least 32 characters, and rejects a value equal to `OIDC_CLIENT_SECRET`, `PORTAL_SESSION_SECRET`, or `CORE_SIGNING_SECRET`; `plugins/portal/src/index.ts:208` loads it. `plugins/portal/README.md` calls the entry a PoC with "Deployment CLI secret wiring ... pending"; the name appears in neither `cli/src/secrets.ts`, `src/deployment/secret-schema.ts`, nor `deploy/helm/values.yaml`.
 
-[^ses]: `cli/src/commands/setup.ts:92` — "for SES, the SMTP credential, not an AWS access key".
+[^trustedadmin]: `plugins/portal/src/trusted-admin.ts:5` — `provisionTrustedAdmin` signs `{ purpose: "trusted-entry-admin", issuer, subject, org, exp: now + 60_000, jti }` with HS256 under `PORTAL_IDENTITY_SECRET` and posts it under source-auth; `src/api/routes/auth-broker.ts:107` verifies with `deps.portalIdentitySecret`, refusing unless it is 32+ characters, differs from `CORE_SIGNING_SECRET`, and `replayDedupe.durable` is set, then claims the `jti`; the route is registered at `:151` and the portal calls it at `plugins/portal/src/index.ts:1284`.
+
+[^portaljwks]: `plugins/portal/src/oidc.ts:98` — `verifyIdToken` validates signature, issuer, audience, and nonce against the provider's `jwksUri`, and serves both `/auth/callback` and `/auth/trusted/callback`.
+
+[^ecstaskprot]: `src/wiring.ts:2019` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
+
+[^ses]:
+    `cli/src/commands/setup.ts:92` — "for SES, the SMTP credential, not an AWS access key".
+    | `PORTAL_TRUSTED_OIDC_CLIENT_SECRET` | portal | trusted-entry PoC; static OAuth client secret, 32+ chars, distinct from the other three; undeclared by the CLI | 2 |
