@@ -71,9 +71,9 @@ apart. They share a protocol and share nothing else.
 - Adding a new secrets product on ECS or Fly, where the platform's own STS and
   KMS cover what is needed. On Kubernetes, ESO is not a new product; it is the
   standard carrier, and this design depends on it.
-- Inventing federation where no vendor offers it. Slack does not federate, and
-  neither do OpenAI or OpenRouter. Those are contained, not removed. Anthropic
-  does federate, which is Phase B5.
+- Inventing federation where no vendor offers it. Slack does not federate and
+  neither does OpenRouter; those are contained, not removed. Anthropic does,
+  which is Phase B5, and OpenAI reportedly does, pending verification there.
 
 ## Where the secrets are today
 
@@ -218,7 +218,7 @@ Tiers are defined in the next section.
 | `DATABASE_POOL_URL`                                                                                              | operator-supplied             | must carry the same credentials as `DATABASE_URL`                                                                        | 2     |
 | `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                                                  | core, Fly targets only        | minted at `-x 8760h`[^flytokens]                                                                                         | 2     |
 | `ANTHROPIC_API_KEY`                                                                                              | every pod via `envFrom`       | static vendor key; Anthropic WIF is GA                                                                                   | 1     |
-| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`                                                                           | core                          | rotatable through admin APIs; root credential lives in the rotation Job                                                  | 2     |
+| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`                                                                           | core                          | rotatable through admin APIs; OpenAI reportedly federates, unverified — see B5                                           | 2     |
 | `MODEL_GATEWAY_API_KEY`                                                                                          | core                          | static bearer, undeclared by the CLI                                                                                     | 3     |
 | `SLACK_BOT_TOKEN`                                                                                                | durable store                 | Slack token rotation, opt-in; needs refresh handling in the installation store                                           | 2     |
 | `SLACK_APP_TOKEN`                                                                                                | durable store                 | encrypted at rest, no vendor rotation API                                                                                | 3     |
@@ -348,14 +348,33 @@ environment, `dev.env`, and `.env` only, so local development degrades to the
 static path with no cluster and no cloud identity, which is what the dual-read
 rule requires anyway.
 
-**A2: multi-key verification.** The application change that makes rotation safe
-on every substrate, including the ones that never get KMS. Each verifier of the
-ten single-value keys accepts a list — current plus previous — and signs with
-the first. `CONNECTOR_SECRET_KEY` gets a key id per encrypted row, so old rows
-decrypt under the old key until they are re-encrypted. The auth broker's JWKS
-serves two `kid`s during an `AUTH_SIGNING_JWK` rollover. With this in place, an
-ESO refresh followed by a rolling restart has an overlap window in which both
-keys verify, and the outage disappears.
+**A2: key rollover with prepare, activate, retire.** The application change
+that makes rotation safe on every substrate. The naive form — each verifier
+accepts current plus previous and signs with the first — is not enough. It
+handles an old signature reaching an updated verifier; it does not handle a new
+signature reaching a verifier that has not updated yet. A portal that has
+refreshed to `[K1, K0]` signs with `K1`; a core replica still on `[K0, K−1]`
+cannot verify it. The same ordering breaks cookie verification between
+replicas and leaves a row encrypted by an updated writer unreadable by an older
+reader. File-mounted delivery changes how instances receive keys, not the order
+in which they do.
+
+So the active producing key is distinct from the accepted set, and rollover is
+three steps. **Prepare**: distribute the new key into every instance's accepted
+set while every producer keeps using the old one — safe in any order, because
+nothing signs with the new key yet. **Activate**: switch producers to the new
+key only after every consumer holds it, on a generation counter each instance
+reports and the rotation Job waits for, or on an explicitly justified rollout
+barrier such as a full rolling restart with the accepted set already updated.
+**Retire**: drop the old key from accepted sets only after everything it
+produced has expired or been migrated — for HMAC tokens their TTL, for cookies
+the session lifetime, and for `CONNECTOR_SECRET_KEY` every stored row
+re-encrypted under the new key id, including rows in retained backups, which
+outlive the live table. The auth broker's JWKS serves the retiring `kid`
+through the same window.
+
+Acceptance test: refresh a producer before a verifier, in both directions, then
+roll back mid-rotation. The scheme passes only if every ordering verifies.
 
 The fallback read path — federated attempted, static accepted — is instrumented
 in A1 to report when it fires. Removing a fallback needs evidence nothing uses
@@ -371,9 +390,36 @@ plan is for has the best one.
 | Substrate      | Mechanism                                                                                                                                                                                                                                                                                | Secret material |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | **Kubernetes** | Each surface gets its own ServiceAccount and a projected token volume with `audience: qm-core` and a short `expirationSeconds`. The kubelet rotates it. The surface sends it as a bearer; core verifies through the `TokenReview` API or the cluster issuer's JWKS, cached.              | none            |
-| ECS            | Each surface gets a KMS key whose policy permits `kms:Sign` only from its own task role. The surface mints a short-lived token and signs it through KMS; core verifies against a cached public key.                                                                                      | none in-process |
+| ECS            | Each surface runs under its own task role and calls `sts:GetWebIdentityToken` with `aud: qm-core`; core verifies against the account's STS issuer JWKS. Outbound web identity federation must be enabled on the account. KMS signing is the fallback where it is not.                    | none            |
 | Fly            | Fly Machines mint OIDC tokens with a caller-chosen audience, issuer `https://oidc.fly.io/<org>`, subject `org:app:machine`, and `app_name` and `image_digest` claims, with public discovery. Verified through the JWKS verifier rather than `TokenReview`. Upstream-only for this layer. | none            |
 | Docker         | HMAC path kept, selected by the same `federation` field. Local development stays here.                                                                                                                                                                                                   | shared key      |
+
+**Bearer mode has a transport prerequisite that HMAC mode does not.** The
+chart wires every inter-service URL as plain `http://`[^plainhttp], and the
+current source-auth signs the request rather than transmitting its key:
+capturing an HMAC-signed request yields nothing reusable, and the timestamp
+window plus `eventId` dedupe defeat replay[^replay]. A captured bearer is
+reusable for every request until it expires. Per-ServiceAccount authorization
+bounds what a stolen token can do; it does not stop the theft. So bearer mode
+is enabled only behind encrypted, server-authenticated transport between
+surfaces and core — TLS with certificate validation on the client, or an
+enforced encrypted cluster network such as a mesh or CNI-level encryption,
+declared as a precondition the chart checks — and mTLS is not required for
+this particular property. Bearer tokens are redacted from logs and error
+bodies. The replay protection the HMAC scheme carries is restated on its own
+terms: a bearer authenticates the caller and does not make a request
+idempotent, so the `eventId` dedupe stays on the endpoints that need it,
+independent of the authentication mode.
+
+**Verification has a revocation trade-off to decide, not assume.** Offline
+verification against the issuer's JWKS cannot see that a pod or ServiceAccount
+has been deleted; a token bound to a deleted object stays valid until it
+expires. `TokenReview` checks the binding and rejects it[^offlinejwt]. So B1
+sets a revocation-latency budget, caches a successful `TokenReview` no longer
+than that budget, serves from cache only within it when the API server is
+unreachable, fails closed past it, and never reinterprets an explicit rejection
+as success through the weaker offline path. API unavailability and a known
+rejection are different outcomes and are handled differently.
 
 The Kubernetes row is the primary design. It is the feature ECS lacks — an
 issuer that mints a verifiable, audience-scoped assertion for a workload — and
@@ -411,13 +457,23 @@ What this buys, beyond deleting a secret:
   stored, or rotated by anyone.
 - The mechanism exists today with zero new infrastructure.
 
-**ECS has no OIDC issuer**, which is why the KMS row exists. AWS STS _consumes_
-a web identity token and does not mint one, and AWS publishes no JWKS for ECS
-task roles. Two prerequisites on that substrate: every surface needs its own
-task role (the reference module shares one `task` role across every non-core
-service[^taskroles]), and the alternative to KMS is a SigV4-signed
-`sts:GetCallerIdentity` request that core replays — the Vault `aws-iam`
-pattern, at the cost of an STS call on core's request path.
+**ECS has an issuer after all.** The first drafts said STS consumes a web
+identity token and cannot mint one. That is outdated. `sts:GetWebIdentityToken`
+returns a short-lived JWT signed by AWS that asserts the caller's IAM identity,
+with a caller-chosen audience and duration, verifiable through a per-account
+issuer at `https://<uuid>.tokens.sts.global.api.aws` that serves a public
+JWKS[^stswebid]. The `sub` is the calling role's ARN, and an
+`https://sts.amazonaws.com/` claim carries `aws_account`, `org_id`, and
+`principal_id`. It needs the account-level outbound-federation flag, off by
+default; the `sts:GetWebIdentityToken` permission on the task role; and a
+regional STS endpoint. With that, an ECS surface mints `aud: qm-core` from its
+own task role and core verifies it against the account issuer's JWKS exactly as
+it verifies a Kubernetes token against the cluster issuer's — one verifier, two
+issuers. Per-surface task roles remain a prerequisite, because the `sub` is the
+role and the reference module shares one `task` role across every non-core
+service[^taskroles]. KMS signing stays as the fallback where outbound
+federation is unavailable or deliberately disabled, and the SigV4
+`GetCallerIdentity` replay is no longer worth its STS call on the request path.
 
 **`PORTAL_IDENTITY_SECRET` collapses into this.** Today the portal mints a
 signed user identity and core verifies it. Once core knows which ServiceAccount
@@ -451,32 +507,58 @@ URL whose username, password, or database differ from the direct
 one[^poolinvariant]; a callback-authenticated URL carries no password to
 compare, so that check changes under both designs.
 
-**RDS.** With `iam_database_authentication_enabled` and an `rds-db:connect`
-grant on core's ServiceAccount via IRSA or Pod Identity, core generates a
-15-minute auth token at connect time. RDS Proxy accepts IAM tokens from clients
-and holds the database credential itself, which makes both `DATABASE_URL` and
-`DATABASE_POOL_URL` token-authenticated under one username and replaces
-PgBouncer on this side. Three things this does **not** do: it does not remove
-the master password, which RDS requires at creation and which
-`manage_master_user_password` relocates into an auto-rotating Secrets Manager
-secret rather than deleting; it needs a bootstrap, since `GRANT rds_iam TO
-<user>` requires a prior password-authenticated session and the module connects
-as the master user today, so the migration adds a separate application role;
-and it does not touch `sslmode=no-verify`, which is worth fixing on its own
-merits through the existing `DATABASE_CA_CERT`.
+**RDS.** The previous revision mixed two authentication modes on one role:
+direct IAM with `rds_iam` granted to the application role, and RDS Proxy
+holding a password for that same username. Once `rds_iam` is granted, the role
+authenticates only with IAM tokens, so the proxy's password login for it stops
+working; the two cannot coexist on one role. Pick one topology. **End-to-end
+IAM**: core authenticates to the proxy with an IAM token from its
+ServiceAccount via IRSA or Pod Identity, and the proxy authenticates to
+PostgreSQL with IAM as well, so `rds_iam` is granted and no password exists for
+the application role anywhere. The external review cites AWS documentation for
+this proxy mode; it could not be fetched from this session and is open question
+2 until confirmed. **Separate roles**: if only client-to-proxy IAM is
+available, the proxy keeps a password-authenticated backend role that never has
+`rds_iam`, distinct from the IAM-authenticated direct role, and the two
+identities are named explicitly in grants and in `pooledDatabaseUrl`. Either
+way the master password remains, relocated by `manage_master_user_password`
+into an auto-rotating secret; the `GRANT rds_iam` bootstrap needs a
+password-authenticated session and the module connects as the master user
+today, so the migration creates the application role first; and the migration
+cannot keep a password fallback on a role that has been switched to IAM — the
+fallback is the separate role, never a second credential on the same one.
+`sslmode=no-verify` is a separate fix through `DATABASE_CA_CERT`.
 
-**CloudNativePG.** No IAM auth exists in-cluster, and A2 does not help here —
-the database password is not in the single-value set, and multi-key
-verification is about verifiers, not connection strings. What makes the
-password safe to rotate is the file-mounted-Secret pattern from A1: the
-operator owns the application role, rotates the credential into a Secret the
-pod mounts as a file, and the `pg` callback reads the file per connection. No
-restart and no reloader, because the kubelet updates the file in place and
-Postgres keeps existing connections alive across a password change, so only new
-connections need the new value. The operator flips the server only after the
-pod holds the new value. CloudNativePG also runs PgBouncer through its `Pooler`
-resource with an operator-managed auth role, so the pooled-path invariant
-dissolves on this side without RDS Proxy.
+**CloudNativePG.** No IAM auth exists in-cluster, and A2 does not help: the
+password is not a verifier key. The previous revision claimed the operator
+changes the server password only after the pod holds the new value. There is
+no such barrier. CloudNativePG applies a `passwordSecret` change to the role
+when the Secret changes — immediately if the Secret carries
+`cnpg.io/reload: "true"`, otherwise at the next reconciliation — and the
+kubelet delivers Secret-volume updates to pods eventually, on its own sync
+interval[^cnpgreload]. Those are two unrelated reconciliation loops with no
+acknowledgment between them. So the server can change while core still reads
+the old password, and a new connection fails until the file catches up; the
+reverse order fails the other way. Existing pooled connections surviving does
+not protect connections opened during scaling, reconnection, or failover.
+Mounted files give no process restart; they do not give no authentication
+outage.
+
+Two honest designs. **Alternating roles**: two login roles `app_a` and `app_b`
+with identical grants. The rotation Job rotates the inactive one's password (a
+Secret change the operator applies), waits until the file has landed in every
+core pod, switches core's pool to the newly rotated role by writing the
+active-role name into the same mounted Secret, and rotates the other on the
+next cycle. No role's password changes while a pool is using it, so the window
+is zero. The Job is what generates and schedules credentials; nothing in
+CloudNativePG does. **Bounded window**: keep one role, accept that new
+connections fail between the operator's apply and the kubelet's delivery, and
+specify it — the `pg` callback re-reads the file on every attempt, connection
+acquisition retries with backoff for at least the kubelet sync interval, and
+the health check does not flip on a single auth failure. Alternating roles is
+the recommendation for an outage-free requirement. The `Pooler` runs PgBouncer
+with an operator-managed auth role either way, which keeps `pooledDatabaseUrl`
+off the same-credential invariant.
 
 ### Phase B3: npm trusted publishing
 
@@ -548,14 +630,26 @@ remaining life of the JWT, whichever is shorter. The SDK does this exchange
 itself when the federation environment variables are set, but that is not the
 path qm takes, for four reasons the design has to state:
 
-1. **The exchange belongs in core, not the SDK.** The Pi harness sends the key
-   as a raw `x-api-key` header and pushes it into the Pi runtime[^piharness], so
-   the SDK's zero-argument federation never runs. Core gets a `CredentialSource`
-   that mints the bearer and returns it with `expiresAt` — the Phase A interface
-   exactly — and the Pi runtime sends it as `Authorization: Bearer`. The Claude
-   Code harness already passes `ANTHROPIC_AUTH_TOKEN` through to its
-   child[^claudeharness], so one bearer serves both harnesses with no second
-   mechanism.
+1. **The exchange belongs in core, and the bearer has to reach the live
+   consumer.** The Pi harness sends the key as a raw `x-api-key` header and
+   pushes it into the Pi runtime once, at creation[^piharness]; the Claude Code
+   harness snapshots `ANTHROPIC_AUTH_TOKEN` into the child's environment at
+   spawn[^claudeharness]. Neither consults core again. That matters because
+   the minted bearer lives for the lesser of the rule's lifetime and twice the
+   remaining life of the identity token[^wiflifetime] — with a ten-minute
+   projected token, twenty minutes at most — and a turn that runs longer than
+   that makes its next model request with an expired credential while core
+   holds a fresh one. Returning `expiresAt` from `CredentialSource` fixes
+   nothing by itself. Three mechanisms reach the live consumer: core runs an
+   authenticated proxy at `ANTHROPIC_BASE_URL` that attaches the current bearer
+   to each outbound request, so neither harness ever holds it; the Pi runtime's
+   credential store is replaced with a provider that resolves the bearer per
+   request rather than at creation; or the Claude child uses a credential
+   helper the harness supplies. The proxy is the recommendation: one mechanism
+   covers both harnesses and keeps the bearer out of the sandbox entirely.
+   Acceptance test: a deliberately short token lifetime and several inference
+   and tool cycles across expiry within one Claude child, and the same on the
+   Pi path independently, since its header replacement does not imply refresh.
 2. **Mint a fresh token per exchange.** ServiceAccount tokens carry a `jti`
    since Kubernetes 1.32, Anthropic rejects a re-presented one by default, and
    the kubelet only rotates a projected file at 80% of its lifetime, so a
@@ -575,7 +669,15 @@ path qm takes, for four reasons the design has to state:
    development a shell `ANTHROPIC_API_KEY` keeps winning for the same reason,
    which is the intended behavior.
 
-OpenAI and OpenRouter offer no federation and stay in Phase D.
+OpenRouter offers no federation and stays in Phase D. The external review
+reports that OpenAI documents workload identity federation — exchange of a
+Kubernetes projected token for a short-lived access token bound to a project
+service account, with the managed-cloud variants named. That page could not be
+fetched from this session and is open question 1. If it holds, `OPENAI_API_KEY`
+moves to Tier 1 for federated deployments, the `CredentialSource` from this
+phase carries a second issuer, and admin-key rotation becomes the compatibility
+fallback rather than the design. Until then it stays in Phase D at Tier 2, and
+any account-level restriction is stated as such rather than as a vendor limit.
 
 ### Phase B6: image pulls without a pull secret
 
@@ -784,11 +886,11 @@ on EKS, GKE, AKS, and on-prem alike with no Bedrock provider, and
 `MODEL_PROVIDERS` has no Bedrock entry to begin with[^providers]. It is no
 longer the route to a keyless model call.
 
-SES stays as written. The existing route is the SMTP interface, which the CLI
-explicitly tells operators to configure with "the SMTP credential, not an AWS
-access key"[^ses], so `SMTP_PASSWORD` is Tier 3 until an IAM-authenticated SES
-transport exists. That is a new transport implementation, listed here as a
-deliberate deferral.
+SES is Tier 2, as Phase D says. The SMTP credential is derived from an IAM
+access key and rotates through the published Lambda rotation, which is what
+puts `SMTP_PASSWORD` at Tier 2 on SES and Tier 3 on any other relay. An
+IAM-authenticated SES transport would remove it entirely; that is a new
+transport implementation and a deliberate deferral.
 
 ## Rollout
 
@@ -860,19 +962,22 @@ projected token is simpler and the cluster already runs the issuer.
 
 ## Risks
 
-| Risk                                                                         | Mitigation                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The Helm Secret split lands but the CLI never emits it, so it drifts by hand | The split is rendered from the spec list in A1, not hand-maintained; the chart honors `secretEnv` for one release with a deprecation warning and fails in the release after                                  |
-| Phase A lands and the later phases do not, leaving refactor without benefit  | Schedule the Secret split, `NPM_TOKEN`, and the database credential independently so value lands either way                                                                                                  |
-| An ESO refresh rotates a shared key and takes the fleet down                 | A2 lands before any `refreshInterval` is set on one of the ten shared keys                                                                                                                                   |
-| A rotated value is invisible to a running pod                                | Core reads through the seam from a file-mounted Secret the kubelet updates in place, or under `SECRETS_BACKEND=aws` with a cache TTL; a reloader is the fallback only for values that must stay in `envFrom` |
-| `TokenReview` becomes a hard dependency on core's request path               | Cache verified tokens for their remaining lifetime; fall back to issuer JWKS verification, which is local                                                                                                    |
-| The pooled-path invariant blocks partial migration                           | `pooledDatabaseUrl` changes in B2 under both designs; RDS Proxy on RDS and the CloudNativePG `Pooler` in-cluster each make the pooled path token- or operator-authenticated                                  |
-| The Porter token stays because B4 is large                                   | Scope it to core's `ExternalSecret` alone as an interim, so at least the Internet-facing pod stops holding it; B4 covers both the sandbox and the publishing consumer                                        |
-| Targets without a workload issuer diverge from Kubernetes                    | Keep the HMAC and KMS paths as explicit `federation` variants, exercised by the same tests                                                                                                                   |
-| The work stalls halfway and the system carries both mechanisms forever       | Each phase deletes its secret from the spec list as its last step; a half-finished phase is visible in that list                                                                                             |
-| A rolling upgrade kills an in-flight turn                                    | Core has ECS task protection and no Kubernetes equivalent[^ecstaskprot]; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                   |
-| An exchanged Anthropic bearer is refreshed from an unrotated projected file  | B5 mints a fresh token per exchange through the TokenRequest API; never re-read the projected file for a refresh                                                                                             |
+| Risk                                                                           | Mitigation                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The Helm Secret split lands but the CLI never emits it, so it drifts by hand   | The split is rendered from the spec list in A1, not hand-maintained; the chart honors `secretEnv` for one release with a deprecation warning and fails in the release after                                                |
+| Phase A lands and the later phases do not, leaving refactor without benefit    | Schedule the Secret split, `NPM_TOKEN`, and the database credential independently so value lands either way                                                                                                                |
+| An ESO refresh rotates a shared key and takes the fleet down                   | A2 lands before any `refreshInterval` is set on a single-value key, and its activate step waits for every verifier to report the new generation                                                                            |
+| A producer refreshes to the new key before a verifier holds it                 | Prepare precedes activate in A2; current-plus-previous alone does not cover this ordering and is not the design                                                                                                            |
+| Bearer tokens transit the chart's plain-HTTP service URLs                      | B1 refuses bearer mode unless TLS or an enforced encrypted network is configured; the chart wires TLS to core when bearer mode is on                                                                                       |
+| The database password changes on the server before core's mounted file updates | Alternating login roles in B2; the active role switches only after the file has landed in every pod, and no role's password changes while a pool uses it                                                                   |
+| A rotated value is invisible to a running pod                                  | Core reads through the seam from a file-mounted Secret the kubelet updates in place, or under `SECRETS_BACKEND=aws` with a cache TTL; a reloader is the fallback only for values that must stay in `envFrom`               |
+| `TokenReview` becomes a hard dependency on core's request path                 | A revocation-latency budget bounds the cache; serve from cache only within it when the API server is unreachable, fail closed past it, and never turn an explicit rejection into success through offline JWKS verification |
+| The pooled-path invariant blocks partial migration                             | `pooledDatabaseUrl` changes in B2 under both designs; RDS Proxy on RDS and the CloudNativePG `Pooler` in-cluster each make the pooled path token- or operator-authenticated                                                |
+| The Porter token stays because B4 is large                                     | Scope it to core's `ExternalSecret` alone as an interim, so at least the Internet-facing pod stops holding it; B4 covers both the sandbox and the publishing consumer                                                      |
+| Targets without a workload issuer diverge from Kubernetes                      | Keep the HMAC and KMS paths as explicit `federation` variants, exercised by the same tests                                                                                                                                 |
+| The work stalls halfway and the system carries both mechanisms forever         | Each phase deletes its secret from the spec list as its last step; a half-finished phase is visible in that list                                                                                                           |
+| A rolling upgrade kills an in-flight turn                                      | Core has ECS task protection and no Kubernetes equivalent[^ecstaskprot]; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                                 |
+| An exchanged Anthropic bearer is refreshed from an unrotated projected file    | B5 mints a fresh token per exchange through the TokenRequest API; never re-read the projected file for a refresh                                                                                                           |
 
 ## Decisions taken
 
@@ -915,8 +1020,15 @@ author. Each is folded into the phase it affects; this list is the record.
 
 ## Open questions
 
-None at this revision. Every question raised since the first draft is either
-folded into a phase or recorded above as a decision.
+1. **OpenAI workload identity federation.** The external review reports that
+   OpenAI documents exchanging a Kubernetes projected token for a short-lived
+   access token bound to a project service account. Not fetchable from this
+   session. If confirmed, `OPENAI_API_KEY` moves to Tier 1 and B5 carries a
+   second issuer.
+2. **RDS Proxy end-to-end IAM.** The external review cites AWS documentation
+   for a proxy mode in which the proxy itself authenticates to PostgreSQL with
+   IAM. Not fetchable from this session. If confirmed, B2 on RDS uses it; if
+   not, B2 uses separate roles.
 
 ## References
 
@@ -1003,6 +1115,18 @@ folded into a phase or recorded above as a decision.
 [^engines]: `cli/package.json:27` — `engines` declares `node >=24.0.0` and nothing for npm.
 
 [^slackrefresh]: `src/surfaces/slack-installation.ts` stores `botTokenEnc` and `appTokenEnc` and nothing else; no refresh token, expiry, or `oauth.v2.exchange` call exists under `src/slack/` or `src/surfaces/`.
+
+[^plainhttp]: `deploy/helm/templates/deployment.yaml:50` — `CORE_API_URL` is rendered as `http://…`; `:57` and `:58` do the same for `WEB_UI_UPSTREAM` and `ADMIN_UPSTREAM`.
+
+[^replay]: `src/auth/source-auth.ts:56` — `createSourceAuth` verifies the signature within a replay window and then claims `eventId` in a dedupe store; a duplicate is rejected as already processed.
+
+[^stswebid]: Anthropic, _Use WIF with AWS_, <https://platform.claude.com/docs/en/manage-claude/wif-providers/aws> — documents `aws sts get-web-identity-token --audience … --signing-algorithm RS256 --duration-seconds …`, the account-level outbound-federation flag, the `sts:GetWebIdentityToken` permission, the per-account issuer URL with discovery JWKS, and the `sub` and `https://sts.amazonaws.com/` claim shapes. Fetched from this session; the AWS STS reference itself was not reachable.
+
+[^offlinejwt]: Kubernetes, _Managing Service Accounts_ — services that verify JWTs offline "do not verify the claims embedded in the JWT token to be current and still valid"; a token bound to a deleted object "will still be considered valid (until the configured token expires)"; clients needing that assurance "MUST use the TokenReview API." Fetched from the kubernetes/website source.
+
+[^cnpgreload]: CloudNativePG, _PostgreSQL Role management_ — "A `DatabaseRole` is applied when its specification or its password Secret changes"; "Password changes in labeled Secrets are applied immediately, while changes in unlabeled Secrets are only applied at a subsequent reconciliation." No coordination with consuming pods is described. Fetched from the cloudnative-pg source.
+
+[^wiflifetime]: Anthropic, _Workload Identity Federation_ — "the lesser of (a) the rule's `token_lifetime_seconds` (default 3,600 seconds) and (b) twice the remaining lifetime of the IdP JWT you presented"; the SDK refreshes at expiry minus 120 s (advisory) and minus 30 s (mandatory) and re-reads the token file on every exchange.
 
 [^ecstaskprot]: `src/wiring.ts:1961` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
 
