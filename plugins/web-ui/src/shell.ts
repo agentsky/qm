@@ -552,7 +552,7 @@ export function renderSidebarFooter(): void {
           aria-expanded=${userMenuOpen ? "true" : "false"}
           @click=${toggleUserMenu}
         >
-          <span class="user-name">${appState.me?.user ?? ""}</span>
+          <span class="user-name">${appState.me?.displayName?.trim() || appState.me?.user || ""}</span>
         </button>
         ${
           userMenuOpen

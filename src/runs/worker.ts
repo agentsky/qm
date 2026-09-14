@@ -10,6 +10,7 @@ import type { SessionStore } from "../sessions/session-store.ts";
 import { errMessage, swallow } from "../util/errors.ts";
 import { sleep } from "../util/async.ts";
 import { retryDelay } from "./retry-delay.ts";
+import { resolveSwarmSettings } from "../swarms/swarm-settings.ts";
 
 export interface ProcessDeps {
   runs: RunStore;
@@ -28,6 +29,7 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
   if (token === null) throw new Error(`processRun called with an unleased run ${run.id}`);
   const intervalMs = deps.heartbeatIntervalMs ?? Math.max(1_000, Math.floor(deps.leaseTtlMs / 3));
   const cancel = new AbortController();
+  let workDeadline: ReturnType<typeof setTimeout> | undefined;
   let consecutiveLost = 0;
   let leaseLost = false;
   const beat = setInterval(() => {
@@ -60,12 +62,18 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
     clearInterval(beat);
   };
   try {
+    if (run.request.swarm) {
+      const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
+      workDeadline = setTimeout(() => cancel.abort(), turnMs);
+    }
+    if (run.request.swarm && run.attempts > 3) throw new NonRetryableTurnError("swarm claim budget exhausted");
     const queueMs = run.startedAt !== null ? Math.max(0, run.startedAt - run.createdAt) : undefined;
     const result = await deps.orchestrator.handleTurn({
       ...run.request,
       origin: resolveTurnOrigin(run.request),
       runId: run.id,
       attempt: run.attempts,
+      runLeaseToken: token,
       finalAttempt: errorParks(run, deps.runs.maxClaims),
       background: opts?.background ?? false,
       cancel: cancel.signal,
@@ -93,6 +101,7 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
     });
     throw err;
   } finally {
+    clearTimeout(workDeadline);
     stopBeat();
   }
 }

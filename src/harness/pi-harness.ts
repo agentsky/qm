@@ -1,5 +1,6 @@
+import { gatewayModelsJson, gatewayModelsVersion } from "../model/gateway-models.ts";
 import { Type } from "typebox";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +8,7 @@ import {
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -386,6 +388,7 @@ async function directAnthropicJson(
       .includes("anthropic")
   )
     return undefined;
+  await modelGateway?.refresh?.();
   const gateway = modelGatewayRequest(modelGateway, model);
   const requestModel = gateway?.model ?? model;
   const requestKey = gateway?.apiKey ?? apiKey;
@@ -442,6 +445,7 @@ interface TurnSession {
   composedPromptTokens: number;
   cwd: string;
   agentDir: string;
+  ephemeralCwd?: string;
 }
 
 interface PerCallStat {
@@ -645,8 +649,10 @@ function sumCacheUsage(
 
 interface IsolatedResources {
   resourceLoader: DefaultResourceLoader;
+  settingsManager: SettingsManager;
   cwd: string;
   agentDir: string;
+  ephemeralCwd?: string;
 }
 
 const MAX_CAPTURED_PAYLOAD_CHARS = 2_000_000;
@@ -702,6 +708,21 @@ export function stoppedPartialTapeMessage(
     timestamp: at,
     stopReason: "stop",
     usage: zeroUsage(),
+  };
+}
+
+export function withoutVolatileContext(message: unknown, sent: string, durable: string): unknown {
+  if (sent === durable || !durable.trim()) return message;
+  const m = message as { content?: unknown };
+  if (typeof m?.content === "string") return m.content === sent ? { ...m, content: durable } : message;
+  if (!Array.isArray(m?.content)) return message;
+  return {
+    ...(message as Record<string, unknown>),
+    content: m.content.map((block) =>
+      (block as { type?: unknown; text?: unknown })?.type === "text" && (block as { text?: unknown }).text === sent
+        ? { ...(block as object), text: durable }
+        : block,
+    ),
   };
 }
 
@@ -1072,13 +1093,29 @@ export function wallClockTurnFailure(
   return !cancelAborted || wallClock === "abandoned";
 }
 
+export function stableCwd(prefix: string): string {
+  return join(tmpdir(), `${prefix}-cwd`);
+}
+
 async function createIsolatedResources(prefix: string, systemPrompt: string): Promise<IsolatedResources> {
-  const cwd = mkdtempSync(join(tmpdir(), `${prefix}-cwd-`));
+  let cwd = stableCwd(prefix);
+  let ephemeralCwd: string | undefined;
+  try {
+    mkdirSync(cwd, { recursive: true });
+    if (!statSync(cwd).isDirectory()) throw new Error(`${cwd} is not a directory`);
+  } catch (e) {
+    swallow("pi: shared cwd unavailable; using a per-turn cwd (prompt cache prefix changes)", e);
+    cwd = mkdtempSync(join(tmpdir(), `${prefix}-cwd-`));
+    ephemeralCwd = cwd;
+  }
   const agentDir = mkdtempSync(join(tmpdir(), `${prefix}-agent-`));
+  const settingsManager = SettingsManager.inMemory({}, { projectTrusted: false });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
+    settingsManager,
     systemPrompt,
+    appendSystemPrompt: [],
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -1086,11 +1123,12 @@ async function createIsolatedResources(prefix: string, systemPrompt: string): Pr
     noContextFiles: true,
   });
   await resourceLoader.reload();
-  return { resourceLoader, cwd, agentDir };
+  return { resourceLoader, settingsManager, cwd, agentDir, ...(ephemeralCwd ? { ephemeralCwd } : {}) };
 }
 
-function removeIsolatedDirs(dirs: { cwd: string; agentDir: string }): void {
-  for (const dir of [dirs.cwd, dirs.agentDir]) {
+function removeIsolatedDirs(dirs: { agentDir: string; ephemeralCwd?: string }): void {
+  for (const dir of [dirs.agentDir, dirs.ephemeralCwd]) {
+    if (!dir) continue;
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch (e) {
@@ -1112,9 +1150,10 @@ export interface ProviderKeys {
 // version instead of leaking a temp dir per turn.
 let cachedCustomModels: { version: number; path: string | null } | null = null;
 function customModelsPath(): string | null {
-  const version = customProvidersVersion();
+  const version = customProvidersVersion() + gatewayModelsVersion();
   if (cachedCustomModels?.version === version) return cachedCustomModels.path;
-  const custom = customModelsJson();
+  const providers = { ...customModelsJson()?.providers, ...gatewayModelsJson() };
+  const custom = Object.keys(providers).length ? { providers } : undefined;
   let path: string | null = null;
   if (custom) {
     path = join(mkdtempSync(join(tmpdir(), "pi-custom-models-")), "models.json");
@@ -1129,6 +1168,7 @@ async function buildModelRuntime(
   modelGateway?: ModelGatewayTransportConfig,
   cacheRetention?: "long",
 ): Promise<ModelRuntime> {
+  await modelGateway?.refresh?.();
   const k: ProviderKeys = typeof keys === "string" ? { anthropic: keys } : keys;
   // Custom providers must exist in the runtime's own registry — a runtime
   // API key alone is invisible to its availability checks. models.json is
@@ -1185,7 +1225,10 @@ async function buildModelRuntime(
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model gateway request payload must be an object");
         }
-        return { ...body, model: request.target };
+        await modelGateway?.refresh?.();
+        const current = modelGatewayRequest(modelGateway, model);
+        if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
+        return { ...body, model: current.target };
       },
     } as unknown as ModelsApiStreamOptions<TApi>;
     return stream(request.model, context, routedOptions);
@@ -1207,7 +1250,10 @@ async function buildModelRuntime(
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model gateway request payload must be an object");
         }
-        return { ...body, model: request.target };
+        await modelGateway?.refresh?.();
+        const current = modelGatewayRequest(modelGateway, model);
+        if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
+        return { ...body, model: current.target };
       },
     } as ModelsSimpleStreamOptions;
     return streamSimple(request.model, context, routedOptions);
@@ -1224,12 +1270,16 @@ export async function oneShot(
   opts?: { signal?: AbortSignal; modelGateway?: ModelGatewayTransportConfig },
 ): Promise<string | undefined> {
   const modelRuntime = await buildModelRuntime(keys, opts?.modelGateway);
-  const { resourceLoader, cwd, agentDir } = await createIsolatedResources(prefix, systemPrompt);
+  const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
+    prefix,
+    systemPrompt,
+  );
   try {
     const { session } = await createAgentSession({
       model,
       modelRuntime,
       resourceLoader,
+      settingsManager,
       customTools: [],
       noTools: "builtin",
       sessionManager: SessionManager.inMemory(),
@@ -1251,8 +1301,7 @@ export async function oneShot(
     }
     return piLastAssistantTextOrThrow(session);
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(agentDir, { recursive: true, force: true });
+    removeIsolatedDirs({ agentDir, ephemeralCwd });
   }
 }
 
@@ -1533,7 +1582,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       systemCacheSplit ? "long" : undefined,
     );
     const ref: ToolContextRef = { current: null };
-    const { resourceLoader, cwd, agentDir } = await createIsolatedResources(tempDirPrefix, composedPrompt);
+    const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
+      tempDirPrefix,
+      composedPrompt,
+    );
     const compileMs = Date.now() - compileStart;
 
     let session: AgentSession;
@@ -1542,6 +1594,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         model,
         modelRuntime,
         resourceLoader,
+        settingsManager,
         customTools: createAgentTools(ref, {
           scratchExec,
           ownerAuthExec,
@@ -1565,7 +1618,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         agentDir,
       }));
     } catch (err) {
-      removeIsolatedDirs({ cwd, agentDir });
+      removeIsolatedDirs({ agentDir, ephemeralCwd });
       throw err;
     }
 
@@ -1592,7 +1645,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             scopeLabel: turnScope!,
           });
         } catch (err) {
-          removeIsolatedDirs({ cwd, agentDir });
+          removeIsolatedDirs({ agentDir, ephemeralCwd });
           throw err;
         }
       }
@@ -1673,6 +1726,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       composedPromptTokens: countTokens(composedPrompt),
       cwd,
       agentDir,
+      ...(ephemeralCwd ? { ephemeralCwd } : {}),
     };
     return { entry, compileMs };
   }
@@ -1777,7 +1831,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             if (pausedGoalAtStart) return goalPausedNote(pausedGoalAtStart);
             return "";
           })();
-          const modelPrompt = [goalNote, turn.input, turn.environment].filter((s) => s && s.trim()).join("\n\n");
+          const durablePrompt = [goalNote, turn.input, turn.environment].filter((s) => s && s.trim()).join("\n\n");
+          const modelPrompt = [durablePrompt, turn.volatileContext].filter((s) => s && s.trim()).join("\n\n");
           entry.ref.llmCapture = [];
           entry.ref.modelCalls = 0;
           entry.ref.modelDispatch = [];
@@ -1810,6 +1865,13 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               entryCreatedAt: steer!.entryCreatedAt,
             };
           };
+          const tapedTrigger = (message: unknown): unknown => {
+            const taped = withoutVolatileContext(message, modelPrompt, durablePrompt);
+            if (taped === message && durablePrompt.trim() && modelPrompt !== durablePrompt) {
+              console.error(`[pi] taped trigger kept its volatile context session=${turn.session.id}`);
+            }
+            return taped;
+          };
           const tapeMessage = async (message: unknown): Promise<void> => {
             if (!turn.tape || tapeError) return;
             const role = (message as { role?: string }).role;
@@ -1823,7 +1885,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             const rec: NewTapeRecord = {
               kind: "message",
               harness: "pi",
-              payload: stripImageBytes(message, isTrigger ? turn.images : undefined),
+              payload: stripImageBytes(
+                isTrigger ? tapedTrigger(message) : message,
+                isTrigger ? turn.images : undefined,
+              ),
               scopeLabel: resultScope ?? turn.scopeLabel,
               ...(isTrigger
                 ? {

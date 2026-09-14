@@ -1,3 +1,5 @@
+import { createGatewayCatalog } from "./model/gateway-catalog.ts";
+import { createSuggestedActivityService, type SuggestedActivityProfile } from "./suggestions/activities.ts";
 import { createRuntimeService } from "./harness/runtime-control.ts";
 import { createPostgresBrokerSessions, type BrokerSessionStore } from "./auth/broker-sessions.ts";
 import { createDirectFileUploads, type DirectFileUploads } from "./files/direct-file-upload.ts";
@@ -303,6 +305,8 @@ import { createPostgresSessionStateBus } from "./runs/postgres-session-state-bus
 import { createMemoryRunActivityStore, type RunActivityStore } from "./runs/run-activity-store.ts";
 import { createPostgresRunActivityStore } from "./runs/postgres-run-activity-store.ts";
 import { createApp, type App } from "./api/app.ts";
+import { createSwarmStore, type SwarmStorage } from "./swarms/swarm-store.ts";
+import { createSwarmService } from "./swarms/swarm-service.ts";
 import { createSlackCoreClient, type SlackAgentRequestContext, type SlackCoreClient } from "./api/slack-core-client.ts";
 import { createSurfaceContextPuller } from "./api/surface-context-puller.ts";
 import { createEngagedRegistry } from "./wake/engaged-registry.ts";
@@ -395,6 +399,8 @@ export function stopWithBackstop(
 }
 
 export interface BuiltApp {
+  suggestedActivityMaintenance: Sweeper;
+  suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   app: App;
   screenSecurity?: SecurityScreenProbe;
   deploymentLayer: DeploymentLayerRuntime;
@@ -533,7 +539,10 @@ export function buildApp(
   if (unknownGatewayModels.length) {
     throw new Error(`MODEL_GATEWAY_MODELS contains unsupported models: ${unknownGatewayModels.join(", ")}`);
   }
-  const gatewayModels = config.modelGateway?.models ?? {};
+  const gatewayCatalog = config.modelGateway
+    ? createGatewayCatalog(config.modelGateway, overrides.modelCredentialFetch)
+    : undefined;
+  const gatewayTransport = gatewayCatalog?.transport;
   const directProviderAvailability = providerKeysPresent(config);
   const directModelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
@@ -547,10 +556,11 @@ export function buildApp(
   const modelCredentials: ModelCredentialStore = {
     ...directModelCredentials,
     async availability() {
+      await gatewayCatalog?.refresh();
       const direct = await directModelCredentials.availability();
       return {
         ...direct,
-        modelIds: new Set(Object.keys(gatewayModels)),
+        modelIds: new Set(Object.keys(gatewayTransport?.models ?? {})),
       };
     },
   };
@@ -1094,7 +1104,7 @@ export function buildApp(
   const modelVerifier = createModelVerifier({
     credentials: modelCredentials,
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
-    modelGateway: config.modelGateway,
+    modelGateway: gatewayTransport,
     probe: overrides.modelVerificationProbe,
   });
   const modelRegistry = createModelOverlayStore(artifactMap("model_registry"), writeModelRegistry, modelVerifier);
@@ -1102,6 +1112,7 @@ export function buildApp(
     setCustomProviders(await customProviders.enabled());
   };
   const refreshModels = async () => {
+    await gatewayCatalog?.refresh();
     await refreshCustomProviders();
     await modelRegistry.refresh();
   };
@@ -1139,12 +1150,22 @@ export function buildApp(
   const runtimeOrgScope = scopeId("org", config.orgId);
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
+  const defaultForHarness = (harness: string) =>
+    defaultModelForHarness(
+      harness,
+      configuredModelForHarness(config, harness),
+      baseModelProviders(config) ??
+        (harness === "pi" && gatewayTransport
+          ? { ...directProviderAvailability, modelIds: new Set(Object.keys(gatewayTransport.models)) }
+          : undefined),
+    );
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
       createPiHarness({
         ...piHarnessConfigOptions(config),
-        resolveBaseModelId: orgBaseModelId,
+        modelGateway: gatewayTransport,
+        resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
         resolveProviderKeys: resolveModelProviderKeys,
         signals: runSignals,
         mcpTools,
@@ -1215,11 +1236,7 @@ export function buildApp(
   const fallback = {
     harnessId: fallbackHarness,
     get modelId() {
-      return defaultModelForHarness(
-        fallbackHarness,
-        configuredModelForHarness(config, fallbackHarness),
-        baseModelProviders(config),
-      );
+      return defaultForHarness(fallbackHarness);
     },
   };
   const judgeModelId = (): string => config.judgeModelId ?? auxiliaryModelFor(orgBaseModelId() ?? fallback.modelId);
@@ -1252,6 +1269,30 @@ export function buildApp(
       ? createPostgresRunStore(requireDbUrl("RUN_STORE"), { maxClaims: config.maxClaims })
       : createMemoryRunStore({ maxClaims: config.maxClaims });
   const runs: RunStore = runStore.runs;
+  const swarmStoreKind = config.databaseUrl ? "postgres" : "memory";
+  const swarms =
+    config.sessionStore === swarmStoreKind && runStoreKind === swarmStoreKind
+      ? createSwarmService({
+          defaults: config.swarmDefaults,
+          store: createSwarmStore(artifactMap<SwarmStorage>("swarms"), {
+            runs,
+            sessions,
+            ...(pgArtifactMap && runStoreKind === "postgres" ? { pg: pgArtifactMap.pool } : {}),
+          }),
+          sessions,
+          runs,
+          sandboxes: sandboxResources,
+          lock: advisoryLock,
+          authorize: async (claims) => {
+            await identity.refresh();
+            return (
+              identity.isInternal(identity.classify(claims.actorId)) &&
+              (claims.members ?? []).every((member) => identity.isInternal(identity.classify(member.id))) &&
+              app.authorizesCapabilityScope(claims)
+            );
+          },
+        })
+      : undefined;
   const ledger = runStore.ledger;
 
   let processes: ProcessRegistry | undefined;
@@ -1326,7 +1367,7 @@ export function buildApp(
   const adminGrantStore = createAdminGrantStore(adminGrantPersist, {
     seed: bootAdminGrantSeed(config.adminGrants, config.orgId, !!config.databaseUrl),
   });
-  const admin = createAdminService(adminGrantStore);
+  const admin = createAdminService(adminGrantStore, { trustedOidcAdminIssuer: config.trustedOidcAdminIssuer });
   const { strategy: memoryStrategy, memory } = createMemoryStrategy(config.memoryStrategy, {
     harness: harness.models,
     memory: baseMemory,
@@ -1496,6 +1537,7 @@ export function buildApp(
     sandbox,
     sandboxMigration,
     sandboxResources,
+    swarms,
     connectorTokens,
     modelGateway,
     auditLog,
@@ -1667,6 +1709,7 @@ export function buildApp(
         })
     : undefined;
   const app = createApp({
+    swarms,
     identity,
     ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
     sessions,
@@ -1903,13 +1946,28 @@ export function buildApp(
       await Promise.all([sweepAsks?.(now), loopFire.sweepStale(now)]);
     },
   });
+  const suggestedActivities = createSuggestedActivityService({
+    store: artifactMap<SuggestedActivityProfile>("suggested_activity_profiles"),
+    sessions,
+    crons,
+    scheduler,
+    enabled: config.suggestedActivitiesEnabled === true,
+    ...(config.suggestedActivitiesContext ? { context: config.suggestedActivitiesContext } : {}),
+  });
+  const suggestedActivityMaintenance = createSweeper(
+    () => leaderLease.hold("suggested-activities:maintenance", () => suggestedActivities.maintain()),
+    60 * 60_000,
+    { label: "suggested-activities", immediate: true },
+  );
   cronChanged.notify = (id) => scheduler.notifyChanged(id);
   orchestratorDeps.control = createControlService(app, scheduler, admin);
   orchestratorDeps.runtime = createRuntimeService(
     {
       config: configStore,
       harnessId: fallbackHarness,
-      baseModelDefault: fallback.modelId,
+      get baseModelDefault() {
+        return fallback.modelId;
+      },
       providerKeys: providerKeysPresent(config),
       modelCredentials,
       modelCredentialFetch: overrides.modelCredentialFetch,
@@ -2036,6 +2094,7 @@ export function buildApp(
       keepWarmSweeper.start();
       deepIdleSweeper?.start();
       wakeSweep.start();
+      swarms?.start();
       orphanedSignalSweeper.start();
       drain.start();
     },
@@ -2054,6 +2113,7 @@ export function buildApp(
       blobSweeper.stop();
       fileUploads?.stop();
       wakeSweep.stop();
+      swarms?.stop();
       orphanedSignalSweeper.stop();
       await Promise.all(workers.map((w) => w.stop(config.shutdownDrainMs))).catch(
         swallowAs("wiring: worker drain failed", undefined),
@@ -2149,6 +2209,8 @@ export function buildApp(
     ...(ambientJudgments ? { ambientJudgments } : {}),
     ...(ackEmojiPicks ? { ackEmojiPicks } : {}),
     channelPolicy,
+    ...(config.suggestedActivitiesEnabled && config.backgroundWorkEnabled ? { suggestedActivities } : {}),
+    suggestedActivityMaintenance,
     uiState: artifactMap<PersistedUiState>("web_ui_state"),
     sessionShares: artifactMap<SessionShare>("session_shares"),
     sessionShareBytes:
@@ -2266,6 +2328,7 @@ export function serverDeps(
     ...(built.ambientJudgments ? { ambientJudgments: built.ambientJudgments } : {}),
     ...(built.ackEmojiPicks ? { ackEmojiPicks: built.ackEmojiPicks } : {}),
     channelPolicy: built.channelPolicy,
+    ...(built.suggestedActivities ? { suggestedActivities: built.suggestedActivities } : {}),
     uiState: built.uiState,
     ...(built.keychain ? { loopSourceTokens: built.keychain } : {}),
     loopSlackClient: slackUserClientFactory(config.slack?.apiUrl),

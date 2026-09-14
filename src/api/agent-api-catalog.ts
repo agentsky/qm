@@ -23,6 +23,25 @@ const onPath = (m: string, p: string) => (method: string, pathname: string) => m
 
 const FAMILIES: AgentApiFamily[] = [
   {
+    match: (method, path) => path === "/v1/swarm" && (method === "GET" || method === "POST"),
+    guidance:
+      "Swarm workers are ordinary sessions with private blank computers. Inspect peers and their context, then send to chosen IDs or all; shared history is visible to every member. Notifications queue unattended turns. An optional forumSandboxId names an existing shared computer, selected explicitly per command with execute's sandbox_id.",
+    routes: [
+      {
+        method: "GET",
+        path: "/v1/swarm",
+        summary:
+          "own identity and all peers with editable JSON context, session IDs and sandbox IDs; ?read=1&after=0&waitMs=0&replyTo=... reads scoped messages, not only intended audience",
+      },
+      {
+        method: "POST",
+        path: "/v1/swarm",
+        summary:
+          "{action:'spawn',requestId,text,count?,context?,contexts?,forumSandboxId?,settings?,backend?} spawns one or an initial pool; {action:'context',context} updates own JSON; {action:'send',requestId,text,audience,replyTo?,notify?} sends to explicit peer ids or all. Retry the same requestId and payload for idempotency.",
+      },
+    ],
+  },
+  {
     match: (m, p) =>
       (m === "GET" && p === "/v1/files/upload-client") ||
       (p === "/v1/files/uploads" && m === "POST") ||

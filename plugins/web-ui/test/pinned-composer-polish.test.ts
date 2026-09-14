@@ -19,7 +19,7 @@ test("editable background activity is rendered inside the composer surface", () 
     chat,
     /composerForm\(agent, html`\$\{glanceTier \? nothing : liveWorkStatus\(agent\)\} \$\{backgroundActivityStrip\(\)\}`\)/,
   );
-  assert.match(composer, /<form class="composer-wrap[^]*?\$\{header\}/);
+  assert.match(composer, /<form[^]*?class="composer-wrap[^]*?\$\{header\}/);
   assert.match(
     css,
     /\.composer-wrap > \.bg-activity \{[^}]*background: color-mix\(in srgb, var\(--secondary\) 40%, var\(--background\)\);/,
@@ -43,4 +43,16 @@ test("queued cards tuck beneath the next card just as the queue tucks beneath th
   assert.doesNotMatch(strip, /gap:/);
   assert.match(strip, /margin: 0 auto -10px;/);
   assert.match(stacked, /margin-top: -10px;/);
+});
+
+test("only collapsed overflowing prompt content gets the soft cutoff", () => {
+  const selector =
+    ".message-stack .user-row:not(:has(~ .user-row)):not(.pin-expanded):not(.pin-fits) .user-bubble > .pin-content";
+  const rule = css.slice(css.indexOf(`${selector} {`)).split("}")[0] ?? "";
+  const overlay = css.slice(css.indexOf(`${selector}::after {`)).split("}")[0] ?? "";
+  assert.match(rule, /position: relative;/);
+  assert.match(rule, /mask-image: linear-gradient\(to bottom, #000 calc\(100% - 18px\), transparent\);/);
+  assert.match(overlay, /height: 18px;/);
+  assert.match(overlay, /backdrop-filter: blur\(2px\);/);
+  assert.match(overlay, /pointer-events: none;/);
 });

@@ -23,6 +23,7 @@ const HARNESS_LABELS: Record<string, string> = {
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
+  "qm:gateway": "Gateway",
   anthropic: "Anthropic",
   openai: "OpenAI",
   openrouter: "OpenRouter",
@@ -120,10 +121,6 @@ export function getHarnessOptions(scopeKey?: string | null): Array<{ value: stri
   return [...new Map(options.map((option) => [option.harnessId, option.harnessLabel])).entries()].map(
     ([value, label]) => ({ value, label }),
   );
-}
-
-export function getModelOptionsForHarness(harnessId: string, scopeKey?: string | null): ModelOption[] {
-  return runtimeFor(scopeKey).options.filter((option) => option.harnessId === harnessId);
 }
 
 export function runtimeModelOptions(

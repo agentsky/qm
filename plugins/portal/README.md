@@ -32,6 +32,34 @@ surfaces, and it does **not** import the core.
    synthesizing the surface cookie for compatibility and attaching a short-lived signed portal
    identity. Surfaces pass that identity to core, which verifies it before any user-scoped action.
 
+## Additional trusted entry (PoC)
+
+An optional OIDC entry route at `/auth/trusted/login` operates alongside the
+existing `/auth/login` provider. Configure `PORTAL_TRUSTED_OIDC` as JSON with
+`issuer`, `authEndpoint`, `tokenEndpoint`, `userinfoEndpoint`, `jwksUri`, and
+`clientId`; supply its distinct `PORTAL_TRUSTED_OIDC_CLIENT_SECRET` separately.
+Register the exact `${PORTAL_PUBLIC_URL}/auth/trusted/callback` URL at that provider.
+Endpoints must use HTTPS in production. This is an operator-configured trust
+relationship: the additional provider must enforce the destination company's
+admission policy before issuing tokens. Primary-provider email and workspace
+restrictions do not apply to this separate route.
+
+The route verifies OIDC signature, issuer, audience, nonce, PKCE and subject binding,
+and consumes login state through core's durable replay store. Principals are scoped
+to the issuer and subject, without automatic linking to email or Slack identities.
+No administrator role is assigned by default. To provision administrators on this
+entry path, set `PORTAL_TRUSTED_OIDC_ADMIN=1` on portal and set core's
+`TRUSTED_OIDC_ADMIN_ISSUER` to the exact trusted issuer. This requires a distinct
+`PORTAL_IDENTITY_SECRET` and durable replay storage. After verified provider login,
+portal submits a short-lived, single-use, purpose-bound assertion; core creates a
+normal durable organization-admin grant before portal issues the session. Primary
+login and impersonation cannot request this promotion. Deactivated users stay blocked.
+Existing sessions need a fresh trusted sign-in. Revoking a grant removes admin access
+until the next successful trusted sign-in; disabling provisioning prevents future
+grants but does not remove existing ones. Company login and Slack integration retain their
+existing configuration. Deployment CLI secret wiring, account linking, and live
+qualification are pending; this is not a released deployment feature.
+
 ## Operator admin login without email
 
 Run `qm admin-login` with the deployment's configuration and secrets to generate

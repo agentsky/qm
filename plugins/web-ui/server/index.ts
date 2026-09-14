@@ -25,6 +25,8 @@ import {
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
+import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
+
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -34,6 +36,7 @@ import {
 } from "../../chassis/src/env.ts";
 
 const PORT = portFromEnv(8096);
+const suggestedActivities = parseSuggestedActivities(process.env.WEB_UI_SUGGESTED_ACTIVITIES);
 const PUBLIC_URL = (process.env.WEB_UI_PUBLIC_URL ?? `http://localhost:${PORT}`).replace(/\/$/, "");
 const WEB_UI_DEV = process.env.WEB_UI_DEV === "1";
 const ALLOW_UNSIGNED_TEST_IDENTITY =
@@ -658,11 +661,20 @@ function namespacedSendKey(user: string, raw: unknown): string | undefined {
 }
 
 async function postTurnAndMint(res: ServerResponse, turn: unknown, user: string, threadRef: string): Promise<void> {
+  const startedAt = performance.now();
+  let runId: string | undefined;
+  res.once("finish", () => {
+    console.info("[web] turn response", {
+      runId,
+      status: res.statusCode,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    });
+  });
   const r = await coreFetch("POST", `/v1/turns?async=1`, JSON.stringify(turn));
   if (r.status >= 200 && r.status < 300) {
     try {
       const parsed = JSON.parse(r.text) as Record<string, unknown> & { runId?: string };
-      const runId = parsed.runId;
+      runId = parsed.runId;
       if (runId) {
         rememberRun(runId, user, threadRef);
         return json(res, r.status, parsed);
@@ -1144,12 +1156,15 @@ const apiRoutes: readonly WebRoute[] = [
     handle: async (c) => {
       const { req, res, user } = c;
       res.setHeader("set-cookie", sessionCookie(user));
-      const [allPermissions, workspaceUrl, authStatus] = await Promise.all([
+      const [allPermissions, workspaceUrl, authStatus, activityConfig] = await Promise.all([
         userPermissions(),
         slackWorkspaceUrl(),
         coreFetch("GET", `/v1/user-model-auth/status?principalId=${encodeURIComponent(user)}`, "", 5_000).catch(
           () => null,
         ),
+        coreFetch("GET", "/v1/suggested-activities", "", 2_000)
+          .then((response) => response.status === 200 && JSON.parse(response.text).enabled === true)
+          .catch(() => false),
       ]);
       if (authStatus === null || authStatus.status !== 200) {
         return json(res, 503, {
@@ -1173,6 +1188,8 @@ const apiRoutes: readonly WebRoute[] = [
         modelAuthConnected: (parsed.connections?.length ?? 0) > 0,
         impersonatedBy: resolveIdentity(req)?.impersonator ?? null,
         displayName: resolveIdentity(req)?.name ?? null,
+        ...(suggestedActivities.length ? { suggestedActivities } : {}),
+        ...(activityConfig ? { suggestedActivitiesGeneration: true } : {}),
         permissions,
       });
     },
@@ -1374,6 +1391,20 @@ const apiRoutes: readonly WebRoute[] = [
       const q = (url.searchParams.get("q") ?? "").trim().slice(0, 80);
       if (!q) return json(res, 400, { error: "bad_request", message: "q required" });
       return relayCore(res, "GET", `/v1/directory/resolve?q=${encodeURIComponent(q)}`);
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/suggested-activities",
+    handle: async (c) => {
+      const input = JSON.parse((await readBody(c.req)) || "{}") as { timezone?: unknown };
+      const response = await coreFetch(
+        "POST",
+        "/v1/suggested-activities",
+        JSON.stringify({ principalId: c.user, seeds: suggestedActivities, timezone: input.timezone }),
+        60_000,
+      );
+      return json(c.res, response.status, JSON.parse(response.text));
     },
   },
   {
@@ -2052,7 +2083,7 @@ const apiRoutes: readonly WebRoute[] = [
       const threadRef =
         typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
       const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
-      if (!threadRef.startsWith("web:") || actor !== user || !record.request) {
+      if ((!threadRef.startsWith("web:") && !threadRef.startsWith("swarm:")) || actor !== user || !record.request) {
         return json(res, 404, { error: "not_found" });
       }
       if (!threadRef.startsWith(`web:${user}:`)) {
@@ -2064,6 +2095,11 @@ const apiRoutes: readonly WebRoute[] = [
             )
           : null;
         if (visible?.status !== 200) return json(res, 404, { error: "not_found" });
+        if (threadRef.startsWith("swarm:")) {
+          const session = (JSON.parse(visible.text) as { session?: { threadRef?: string; surface?: string } }).session;
+          if (session?.surface !== "swarm" || session.threadRef !== threadRef)
+            return json(res, 404, { error: "not_found" });
+        }
       }
 
       const approval = { requestId, approved, ...(scope ? { scope } : {}) };

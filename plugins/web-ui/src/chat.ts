@@ -1,3 +1,4 @@
+import { loadGeneratedActivities } from "./generated-activities";
 import { playgroundPath, playgroundsIn, type PlaygroundArtifact } from "./playground";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { Attachment } from "@earendil-works/pi-web-ui";
@@ -54,6 +55,7 @@ import {
   entriesToMessages,
   fetchEntry,
   fetchTranscript,
+  fetchSessionApprovals,
   currentEarlierCount,
   forkOriginDetails,
   forkCutSeq,
@@ -65,6 +67,7 @@ import {
   makeOpenerStreamFn,
   makeRunResumeStreamFn,
   resolveApproval,
+  runApprovalTurn,
   type RunPoll,
   TAIL_TURNS,
   type ApprovalDecision,
@@ -141,6 +144,7 @@ import { workSeconds, workedLabel } from "./work-duration";
 import { decorateTextCodeBlocks, normalizePlainTextFences } from "./text-code";
 
 import { createTranscriptViewport } from "./transcript-viewport";
+import { suggestedActivities } from "./suggested-activities";
 
 installMarkdownSanitizer();
 
@@ -199,7 +203,9 @@ export function createChatSurface(
   ctx: ConvCtx,
   dependencies: { fetchTranscript?: typeof fetchTranscript; openSession?: typeof openSession } = {},
 ): ChatSurface {
-  const runSlot = createRunSlot();
+  const runSlot = createRunSlot((message) => {
+    ctx.composer.state.error = message;
+  });
   const transcriptViewport = createTranscriptViewport();
   const transcriptFetcher = dependencies.fetchTranscript ?? fetchTranscript;
   const sessionOpener = dependencies.openSession ?? openSession;
@@ -292,12 +298,14 @@ export function createChatSurface(
     addPendingSession(chatState.threadRef, chatState.scopeId, chatState.contextName);
   }
 
+  let readonlyApprove: ((decision: ApprovalDecision) => Promise<void>) | null = null;
   let readOnlyView: { id: string; threadRef: string; session: CoreSession; anchorSeq: number | null } | null = null;
 
   function teardownActiveChat(): void {
     transcriptViewport.dispose();
     transcriptRefreshGeneration++;
     readOnlyView = null;
+    readonlyApprove = null;
     preserveOutgoingWorkingDot(null);
     detachActiveAgent();
     chatState.agent = null;
@@ -386,6 +394,7 @@ export function createChatSurface(
     const container = ctx.claimContainer();
     if (!container) return;
     readOnlyView = null;
+    readonlyApprove = null;
     preserveOutgoingWorkingDot(threadRef);
     dropAbandonedNewChat(threadRef);
     detachActiveAgent();
@@ -485,6 +494,12 @@ export function createChatSurface(
     container.replaceChildren(chatState.host);
     const opening = startProactiveOpenerIfNew(agent, threadRef, normalStreamFn, onWork, sessionId, scopeId, messages);
     drawActiveChat(agent, { forceScroll: true });
+    const me = appState.me;
+    if (!sessionId && me && (scopeId === null || scopeId === `personal:${me.user}`)) {
+      void loadGeneratedActivities(me, () => {
+        if (appState.me === me && chatState.agent === agent && !chatState.sessionId) drawActiveChat(agent);
+      });
+    }
     ctx.composer.focusComposerEnd();
     ctx.ensureDeliveryStream();
     if (!opening) void resumeTrackedRun(agent, threadRef, normalStreamFn, onWork);
@@ -500,6 +515,7 @@ export function createChatSurface(
     scopeId: string | null,
     messages: ReturnType<typeof entriesToMessages>,
   ): boolean {
+    if (appState.me?.suggestedActivitiesGeneration || appState.me?.suggestedActivities?.length) return false;
     if (proactiveOpenerStarted || sessionId !== null || scopeId !== null || messages.length > 0) return false;
     if (!sessionsState.loaded) return false;
     if (sessionsState.list.some((s) => s.id)) return false;
@@ -586,21 +602,21 @@ export function createChatSurface(
   }
 
   async function stopLiveRun(): Promise<void> {
-    if (!hasLiveRun(runSlot)) {
-      requestStop(runSlot);
-      return;
-    }
+    if (runSlot.stopGeneration === runSlot.generation) return;
     const agent = chatState.agent;
-    const revealUnstoppedRun = (): void => {
-      runSlot.unreachedAbort = true;
-      if (agent && agent === chatState.agent && !agent.state.isStreaming) void refreshTranscriptFromEntries(agent);
-    };
+    const generation = runSlot.generation;
+    requestStop(runSlot);
+    drawActiveChat();
+    if (!hasLiveRun(runSlot)) return;
     try {
-      const outcome = await signalLiveRun(runSlot, "abort", undefined, { threadRef: chatState.threadRef });
-      if (!outcome.ok) revealUnstoppedRun();
+      await signalLiveRun(runSlot, "abort", undefined, { threadRef: chatState.threadRef });
     } catch (err) {
-      revealUnstoppedRun();
+      if (generation !== runSlot.generation || runSlot.stopGeneration !== generation || agent !== chatState.agent)
+        return;
+      runSlot.stopGeneration = null;
       throw err;
+    } finally {
+      if (agent === chatState.agent) drawActiveChat();
     }
   }
 
@@ -673,6 +689,7 @@ export function createChatSurface(
   function resolveCommandApproval(decision: ApprovalDecision): void {
     const agent = chatState.agent;
     if (agent) void approveCommand(agent, decision);
+    else if (readonlyApprove) void readonlyApprove(decision);
   }
 
   function activePendingApprovals(): PendingApproval[] {
@@ -709,7 +726,7 @@ export function createChatSurface(
     const generation = ++transcriptRefreshGeneration;
     const last = agent.state.messages[agent.state.messages.length - 1] as { stopReason?: string } | undefined;
     if (last?.stopReason === "error") return drawActiveChat(agent);
-    if (last?.stopReason === "aborted" && !runSlot.unreachedAbort) return drawActiveChat(agent);
+    if (last?.stopReason === "aborted") return drawActiveChat(agent);
     try {
       const anchor = chatState.transcriptAnchorSeq;
       const page = await transcriptFetcher(sessionId, anchor !== null ? { sinceSeq: anchor } : undefined);
@@ -738,7 +755,6 @@ export function createChatSurface(
         return;
       if (refreshedInherited) chatState.inheritedMessages = entriesToMessages(refreshedInherited, transcriptModel());
       agent.state.messages = messages;
-      runSlot.unreachedAbort = false;
       const rawEarlier = page.earlierEntries ?? 0;
       chatState.earlierCount = currentEarlierCount(chatState.forkSession ?? {}, rawEarlier);
       chatState.transcriptAnchorSeq = rawEarlier > 0 ? (page.entries?.[0]?.seq ?? null) : null;
@@ -942,6 +958,7 @@ export function createChatSurface(
     resetBackgroundPanel();
     const host = document.createElement("div");
     host.className = "custom-chat readonly-chat";
+    let approvals: PendingApproval[] = [];
     const draw = () => {
       const shownMessages = chatState.inheritedExpanded ? [...chatState.inheritedMessages, ...messages] : messages;
       updateSpeakerLabels(shownMessages);
@@ -967,7 +984,7 @@ export function createChatSurface(
                   : "This conversation is read-only here."
               }
             </div>
-            ${backgroundActivityStrip()}
+            ${backgroundActivityStrip()} ${approvals.length ? ctx.composer.composerApprovalPanel(approvals) : nothing}
             <section class="chat-scroll readonly-scroll">
               ${pinnedStrip()}
               <div class="message-stack">
@@ -1039,7 +1056,36 @@ export function createChatSurface(
         if (host.isConnected) transcriptViewport.sync(host.querySelector<HTMLElement>(".chat-scroll"));
       });
     };
+    const current = (): boolean => readonlyRedraw === draw;
+    const refreshApprovals = async (): Promise<void> => {
+      if (!s.threadRef.startsWith("swarm:")) return;
+      const result = await fetchSessionApprovals(s.id);
+      if (!current()) return;
+      approvals = result?.approvals ?? [];
+      draw();
+    };
+    readonlyApprove = async (decision) => {
+      if (!current() || chatState.resolvingApprovals.size || !approvals.some((a) => a.requestId === decision.requestId))
+        return;
+      chatState.resolvingApprovals.add(decision.requestId);
+      ctx.composer.state.error = "";
+      draw();
+      let completed = false;
+      try {
+        await runApprovalTurn(new Agent({ initialState: { model: transcriptModel() } }), decision, undefined);
+        completed = true;
+      } catch (error) {
+        if (current()) ctx.composer.state.error = errMessage(error, "Could not send the approval.");
+      } finally {
+        if (current()) {
+          chatState.resolvingApprovals.delete(decision.requestId);
+          await refreshApprovals();
+          if (completed && current()) onDelivery(s.threadRef);
+        }
+      }
+    };
     readonlyRedraw = draw;
+    void refreshApprovals();
     draw();
     container.replaceChildren(host);
     if (!sameSession) scrollToBottom();
@@ -1052,13 +1098,8 @@ export function createChatSurface(
     return html`
       <article class="message-row assistant-row welcome-greeting">
         <div class="assistant-body">
-          <div class="streaming-text">
-            ${markdown(
-              "Hi, I'm your AI teammate 👋\n\n" +
-                "I run tasks on a computer of my own and work across your connected tools (Slack, Google Workspace, GitHub, Linear, and the open web), and I remember what we work on together.\n\n" +
-                "Want to get set up? Tell me your name and what you're working on, and I'll take it from there, or just ask me anything to dive straight in.",
-            )}
-          </div>
+          <h1>Hi, I'm your AI teammate 👋</h1>
+          <p>Tell me what you're working on, or pick a task below to get started.</p>
         </div>
       </article>
     `;
@@ -1227,6 +1268,7 @@ export function createChatSurface(
     if (activePendingApprovals().length) return "Needs your approval";
     if (agent.state.isStreaming || chatState.resolvingApprovals.size > 0) {
       const work = chatState.liveWork ?? { status: "thinking", activity: [] };
+      if (runSlot.stopGeneration === runSlot.generation) return "Stopping…";
       const summary = liveWorkSummary(work);
       if (!summary) return "Thinking…";
       return summary.detail ? `${summary.label}: ${summary.detail}` : summary.label;
@@ -1280,11 +1322,29 @@ export function createChatSurface(
             ${pinnedStrip()}
             <div class="message-stack ${emptyChat ? "empty-stack" : ""}">
               ${inheritedHeader()} ${chatState.earlierCount > 0 ? earlierNotice(agent) : nothing} ${messageContent}
-              ${emptyChat ? html`<h1 class="chat-cta">${chatCta()}</h1>` : nothing}
+              ${emptyChat && !isNewUser ? html`<h1 class="chat-cta">${chatCta()}</h1>` : nothing}
               ${showStateError(messages, agent.state.errorMessage) ? html`<div class="composer-error inline">${agent.state.errorMessage}</div>` : nothing}
             </div>
           </section>
           <div class="chat-bottom-dock">
+            ${
+              emptyChat &&
+              !glanceTier &&
+              (!ctx.pane || tier === "full") &&
+              !chatState.sessionId &&
+              (chatState.scopeId === null || chatState.scopeId === `personal:${appState.me?.user}`) &&
+              !agent.state.isStreaming
+                ? suggestedActivities(
+                    appState.me?.suggestedActivities,
+                    (activity) => ctx.composer.fillSuggestedPrompt(activity.prompt, agent),
+                    Boolean(
+                      ctx.composer.state.draft ||
+                      ctx.composer.state.attachments.length ||
+                      ctx.composer.state.processingFiles,
+                    ),
+                  )
+                : nothing
+            }
             ${goalStrip(agent)} ${ctx.composer.queuedStrip(agent)}
             ${ctx.composer.composerForm(agent, html`${glanceTier ? nothing : liveWorkStatus(agent)} ${backgroundActivityStrip()}`)}
           </div>
@@ -2138,7 +2198,8 @@ export function createChatSurface(
     if (!agent.state.isStreaming && chatState.resolvingApprovals.size === 0) return nothing;
     const work = chatState.liveWork ?? { status: "thinking", activity: [] };
     if (work.status !== "thinking" && work.status !== "working") return nothing;
-    const summary = liveWorkSummary(work);
+    const stopping = runSlot.stopGeneration === runSlot.generation;
+    const summary = stopping ? null : liveWorkSummary(work);
     const expandable = Boolean(summary?.detail);
     const expanded = expandable && liveWorkExpanded;
     let title = "";
@@ -2155,7 +2216,7 @@ export function createChatSurface(
         >
           ${summary ? html`<span class="tool-icon">${icon(summary.icon, 15)}</span>` : nothing}
           <span class="live-work-label"
-            >${summary ? summary.label : sheenLabel(`Thinking${usedToolsSuffix(work)}`, true)}</span
+            >${summary ? summary.label : sheenLabel(stopping ? "Stopping…" : `Thinking${usedToolsSuffix(work)}`, true)}</span
           >
           ${summary?.detail ? html`<span class="live-work-detail">${summary.detail}</span>` : nothing}
           ${expandable ? html`<span class="live-work-toggle">${icon(ChevronRight, 14)}</span>` : nothing}
@@ -2713,6 +2774,7 @@ export function createChatSurface(
         channelName: chatState.contextName,
       }),
     stopLiveRun,
+    isStopping: () => runSlot.stopGeneration === runSlot.generation,
     currentTurnOptions,
     newChat,
     teardown: teardownActiveChat,

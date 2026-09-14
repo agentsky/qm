@@ -31,7 +31,12 @@ import {
   type ModelProviderAvailability,
 } from "./model/pi-models.ts";
 
+import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-settings.ts";
+
 export interface Config {
+  suggestedActivitiesEnabled?: boolean;
+  suggestedActivitiesContext?: string;
+  swarmDefaults?: SwarmSettings;
   production: boolean;
   allowUnauthenticatedCore: boolean;
   port: number;
@@ -80,6 +85,7 @@ export interface Config {
   piSystemCacheSplit: boolean;
   sessionTapeMode: "shadow" | "serve";
   adminGrants?: string;
+  trustedOidcAdminIssuer?: string;
   emailAuthPrincipals?: string[];
   emailAuthDomain?: string;
   resendApiKey?: string;
@@ -930,7 +936,7 @@ function csvPaths(value: string | undefined): string[] | undefined {
 function modelGatewayFromEnv(env: NodeJS.ProcessEnv): ModelGatewayTransportConfig | undefined {
   const names = ["MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY", "MODEL_GATEWAY_API_KEY_HEADER", "MODEL_GATEWAY_MODELS"];
   if (!names.some((name) => env[name]?.trim())) return undefined;
-  for (const name of names) {
+  for (const name of names.filter((name) => name !== "MODEL_GATEWAY_MODELS")) {
     if (!env[name]?.trim()) throw new Error(`${name} is required when model gateway routing is configured`);
   }
   const apiKeyHeader = env.MODEL_GATEWAY_API_KEY_HEADER!.trim();
@@ -938,7 +944,7 @@ function modelGatewayFromEnv(env: NodeJS.ProcessEnv): ModelGatewayTransportConfi
     throw new Error("MODEL_GATEWAY_API_KEY_HEADER must be a valid HTTP header name");
   }
   const models: Record<string, string> = {};
-  for (const mapping of env.MODEL_GATEWAY_MODELS!.split(",")) {
+  for (const mapping of env.MODEL_GATEWAY_MODELS?.trim() ? env.MODEL_GATEWAY_MODELS.split(",") : []) {
     const separator = mapping.indexOf("=");
     const source = mapping.slice(0, separator).trim();
     const target = mapping.slice(separator + 1).trim();
@@ -985,6 +991,9 @@ function modelProviderEnvStrict(env: NodeJS.ProcessEnv): ModelProvider | undefin
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const swarmDefaults = resolveSwarmSettings(
+    env.SWARM_DEFAULTS === undefined ? undefined : JSON.parse(env.SWARM_DEFAULTS),
+  );
   const harness = harnessEnvStrict(env.HARNESS);
   const codexAuthCredential = env.CODEX_AUTH_CREDENTIAL?.trim() || undefined;
   const claudeAuthCredential = env.CLAUDE_AUTH_CREDENTIAL?.trim() || undefined;
@@ -1200,6 +1209,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const memoryProviderConfig = parseMemoryProviderConfig(env.MEMORY_PROVIDER_CONFIG, env);
   return {
+    suggestedActivitiesEnabled: boolEnvStrict("SUGGESTED_ACTIVITIES_ENABLED", env.SUGGESTED_ACTIVITIES_ENABLED) ?? true,
+    ...(env.SUGGESTED_ACTIVITIES_CONTEXT
+      ? { suggestedActivitiesContext: env.SUGGESTED_ACTIVITIES_CONTEXT.slice(0, 8000) }
+      : {}),
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
@@ -1260,6 +1273,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(modelProvider ? { modelProvider } : {}),
     providerBaseUrls,
     ...(modelGateway ? { modelGateway } : {}),
+    ...(env.TRUSTED_OIDC_ADMIN_ISSUER ? { trustedOidcAdminIssuer: env.TRUSTED_OIDC_ADMIN_ISSUER } : {}),
     ...(env.ADMIN_GRANTS ? { adminGrants: env.ADMIN_GRANTS } : {}),
     ...(env.AUTH_ALLOWED_EMAILS
       ? {
@@ -1300,6 +1314,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     execTimeoutMaxMs:
       (numEnvStrict("EXEC_TIMEOUT_MAX_SEC", env.EXEC_TIMEOUT_MAX_SEC) ?? CONFIG_DEFAULTS.execTimeoutMaxSec) * 1000,
     turnWallClockMs,
+    swarmDefaults,
     runMaxAgeMs,
     runWaitMs: (turnWallClockMs > 0 ? turnWallClockMs : runMaxAgeMs) + 60_000,
     backgroundJobTtlMs:
