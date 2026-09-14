@@ -1,0 +1,31 @@
+# Getting rid of the static secrets
+
+We run qm on Kubernetes through the Helm chart and have been trying to get the long-lived secrets out of it. We got far enough to think the change belongs upstream rather than in our layer, so here is what we found.
+
+The finding you can act on fastest is in the chart. `values.yaml` `secretEnv` renders into one `Secret` and `templates/deployment.yaml` attaches it with an unconditional `envFrom` to every Deployment, so the Internet-facing portal pod holds `ANTHROPIC_API_KEY`, `DATABASE_URL`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET` and the Admin-role `PORTER_DEPLOY_API_TOKEN`, none of which it uses. The per-service routing already exists — `secretsForService` in `cli/src/secrets.ts` decides which ECS task gets which secret, and `docs/porter.md` hand-copies the same table — but the chart ignores it. One Secret per service, rendered from that spec, is step zero for everything below.
+
+The deploy plane is otherwise most of the way there: the AWS deploy role is assumed through GitHub OIDC with audience and subject pinned, image pushes use the per-job token, and images are signed keylessly. The runtime plane has none of it.
+
+Counting what is left: the CLI declares 41 first-party secret names, nine of which are not secret material, so 32 real ones. More live outside that list — `FLY_SANDBOX_API_TOKEN`, `SECURITY_SCREEN_PROXY_TOKEN`, `NPM_TOKEN` in the release workflow, `imagePullSecrets` on a private fork, and two that core requires but the CLI has never heard of, `MODEL_GATEWAY_API_KEY` and `DEPLOY_APPS_SESSION_SECRET`. Those two are worth fixing whatever happens to the rest.
+
+The one we care most about is `CORE_SIGNING_SECRET`. It is a single symmetric HMAC key shared by core and every surface plugin. Any holder can forge any other holder's requests, so a compromised admin container can sign as portal. The signature carries no caller identity — `verifySignature` checks signature, freshness and replay and nothing else — so core cannot tell which surface is calling. And with one key and one value, rotation is a fleet-wide atomic event with no overlap window. `PORTAL_IDENTITY_SECRET` has the same shape in the same direction: the portal mints a signed user identity, core and admin verify it.
+
+What we would like to build
+
+- Per-surface identity from projected ServiceAccount tokens. Each surface gets its own ServiceAccount and a projected token volume with `audience: qm-core` and a short expiry that the kubelet rotates; it sends the token as a bearer and core verifies it through `TokenReview` or the cluster issuer's JWKS. Core learns which surface is calling, nothing is minted or stored by anyone, and `PORTAL_IDENTITY_SECRET` collapses into it — once core knows the calling ServiceAccount, the user claims are a payload that account asserts, and the only question is whether it may. On ECS, where no issuer exists, the same shape runs on KMS signing under the surface's task role; Docker and Fly keep the HMAC.
+- Multi-key verification for the ten keys verified against exactly one value — the HMACs, the cookie keys, `CONNECTOR_SECRET_KEY`. Each verifier accepts current plus previous, encrypted rows carry a key id, and the auth broker's JWKS serves two `kid`s during a rollover. Without this, rotating any of them through External Secrets Operator plus a reloader is an outage: signature mismatch, every session invalidated, or every connector row undecryptable. With it, ESO with a `refreshInterval` is a safe carrier for everything that cannot be federated, on any cloud.
+- A `kubernetes` sandbox backend that talks to the cluster API with core's own ServiceAccount, RBAC-scoped to a sandbox namespace, instead of Porter's admin API. It is the only route that removes the Porter token rather than storing it somewhere nicer.
+- The database credential. On RDS, IAM auth with a `pg` password callback (8.13 supports it) and RDS Proxy so the pooled path is token-authenticated too; the master password stays but rotates itself under `manage_master_user_password`. In-cluster Postgres has no IAM auth, so that is ESO plus a restart, or an operator like CloudNativePG that owns the credential.
+- npm trusted publishing instead of `NPM_TOKEN`.
+
+Three things we got wrong on the first pass, which we would rather flag than have you find
+
+- **There is no existing seam to hang this on.** `SecretSource` carries connector OAuth clients only; core reads its own secrets straight from `process.env` in `config.ts`, which also snapshots them at boot so a rotated value is invisible until restart. The CLI and core keep two separate secret spec lists with no import between them, and the CLI has no Kubernetes target, so nothing today can emit the per-service Secrets the chart needs. Reconciling those and giving the spec a Helm or ESO emitter comes first.
+- **`pooledDatabaseUrl` rejects a pooled URL whose credentials differ from the direct one**, and a callback-authenticated URL has no password to compare, so that check changes under any design.
+- **Per-surface ServiceAccounts do not exist yet.** The chart declares one for every workload. Splitting it is step one of the identity work, not a detail.
+
+What this does not do
+
+Slack, the connector OAuth client secrets, an external `OIDC_CLIENT_SECRET` and `SMTP_PASSWORD` are minted in vendor dashboards with no API to rotate them. For those the ceiling is the durable store plus a `qm doctor` age report; `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` already live there, `SLACK_SIGNING_SECRET` does not. The model provider and sandbox vendor keys may be rotatable through vendor admin APIs, which we have not checked. Bedrock and SES would remove the model and email keys on AWS, but `MODEL_PROVIDERS` has no Bedrock entry and the SES path today is SMTP credentials, so both are new implementations rather than a config flag.
+
+Happy to build this if you are interested, and happy to split it so the chart fix, the npm change and the two undeclared secrets land independently of the larger refactor.
