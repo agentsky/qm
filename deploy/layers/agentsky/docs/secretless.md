@@ -27,13 +27,14 @@ per-service secret routing at all. That gap shapes Phase A.
 The CLI declares 41 first-party secret names[^specs]. Nine of those are not
 secret material — `PUBLIC_API_URL`, both CA certificates, `OIDC_CLIENT_ID`,
 `PORTAL_EXPECTED_TEAM_ID`, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, `SMTP_HOST`,
-`SMTP_USERNAME` — leaving 32 real secrets. Seven more live outside that list:
+`SMTP_USERNAME` — leaving 32 real secrets. Eleven more live outside that list:
 `FLY_SANDBOX_API_TOKEN`, `SECURITY_SCREEN_PROXY_TOKEN`, `NPM_TOKEN` in the
 release workflow, two that core requires but the CLI never declares
 (`MODEL_GATEWAY_API_KEY`[^gateway] and `DEPLOY_APPS_SESSION_SECRET`[^deployapps]),
 and two that only exist on Kubernetes: `imagePullSecrets` and the ingress TLS
-key. Of the seven, only the TLS key expires on its own, because cert-manager
-rotates it; the other six do not.
+key, and four more connector client secrets the OAuth layer reads but the CLI never
+declares[^undeclaredoauth]. Of these, only the TLS key expires on its own,
+because cert-manager rotates it; the rest do not.
 
 The deploy plane is already in better shape than the runtime plane. Deploying to
 AWS from GitHub Actions uses `sts:AssumeRoleWithWebIdentity` against an
@@ -193,40 +194,41 @@ the pods on its own.
 
 Tiers are defined in the next section.
 
-| Secret                                                                                   | Where it lives                | Today                                                                                       | Tier |
-| ---------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------- | ---- |
-| AWS deploy role                                                                          | `main.tf:311`                 | GitHub OIDC, subject + audience pinned                                                      | 0    |
-| GHCR push                                                                                | `release-package.yml`         | `github.token`, per-job                                                                     | 0    |
-| Cosign signing key                                                                       | `release-package.yml`         | keyless, Fulcio + OIDC                                                                      | 0    |
-| Ingress TLS key                                                                          | `values.yaml` `clusterIssuer` | cert-manager issues and rotates                                                             | 0    |
-| `CORE_SIGNING_SECRET`                                                                    | every pod via `envFrom`       | shared static HMAC                                                                          | 1    |
-| `PORTAL_IDENTITY_SECRET`                                                                 | every pod via `envFrom`       | shared static HMAC, portal mints                                                            | 1    |
-| `DATABASE_URL`                                                                           | every pod via `envFrom`       | static password, no rotation path                                                           | 1    |
-| `PORTER_DEPLOY_API_TOKEN`                                                                | every pod via `envFrom`       | Admin-role token; used for sandboxes and for app publishing[^porterboth]                    | 1    |
-| `NPM_TOKEN`                                                                              | `publish-cli.yml:89`          | static automation token                                                                     | 1    |
-| `imagePullSecrets`                                                                       | `values.yaml`                 | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it | 1    |
-| `CONNECTOR_SECRET_KEY`                                                                   | every pod via `envFrom`       | static encryption key, one value                                                            | 2    |
-| `AUTH_SIGNING_JWK`                                                                       | every pod via `envFrom`       | static P-256 private key                                                                    | 2    |
-| `CAPABILITY_SECRET`                                                                      | every pod via `envFrom`       | static HMAC, one value                                                                      | 2    |
-| `SKILL_SIGNING_SECRET`                                                                   | every pod via `envFrom`       | static HMAC, one value                                                                      | 2    |
-| `AUTH_TOKEN_SECRET`                                                                      | every pod via `envFrom`       | static HMAC, one value                                                                      | 2    |
-| `PORTAL_SESSION_SECRET`                                                                  | every pod via `envFrom`       | static cookie key, one value                                                                | 2    |
-| `DEPLOY_APPS_SESSION_SECRET`                                                             | core                          | static cookie key, undeclared by the CLI                                                    | 2    |
-| `AWS_DEPLOY_GATE_SECRET`                                                                 | core                          | static HMAC, one value                                                                      | 2    |
-| `AUTH_CLIENT_SECRET`                                                                     | every pod via `envFrom`       | CLI-generated; becomes in-process after B1, never deployed                                  | 1    |
-| `DATABASE_POOL_URL`                                                                      | operator-supplied             | must carry the same credentials as `DATABASE_URL`                                           | 2    |
-| `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                          | core, Fly targets only        | minted at `-x 8760h`[^flytokens]                                                            | 2    |
-| `ANTHROPIC_API_KEY`                                                                      | every pod via `envFrom`       | static vendor key; Anthropic WIF is GA                                                      | 1    |
-| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`                                                   | core                          | static vendor keys; rotatable through admin APIs                                            | 3    |
-| `MODEL_GATEWAY_API_KEY`                                                                  | core                          | static bearer, undeclared by the CLI                                                        | 3    |
-| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`                                                     | durable store                 | encrypted at rest, no vendor rotation API                                                   | 3    |
-| `SLACK_SIGNING_SECRET`                                                                   | core, env only                | no stored path, no vendor rotation API                                                      | 3    |
-| `SPRITES_TOKEN`, `E2B_API_KEY`, `MODAL_TOKEN_*`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY` | core                          | dashboard-minted; moot on this path once B4 lands                                           | 3    |
-| `SECURITY_SCREEN_PROXY_TOKEN`                                                            | core                          | static bearer to a third-party screen                                                       | 3    |
-| `RESEND_API_KEY`                                                                         | every pod via `envFrom`       | static vendor key; rotatable through Resend's API                                           | 3    |
-| `SMTP_PASSWORD`                                                                          | auth                          | dashboard-minted, no vendor rotation API                                                    | 3    |
-| `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                            | core                          | dashboard-minted, no vendor rotation API                                                    | 3    |
-| `OIDC_CLIENT_SECRET` (external IdP)                                                      | portal                        | dashboard-minted, no vendor rotation API                                                    | 3    |
+| Secret                                                                                                           | Where it lives                | Today                                                                                                               | Tier |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---- |
+| AWS deploy role                                                                                                  | `main.tf:311`                 | GitHub OIDC, subject + audience pinned                                                                              | 0    |
+| GHCR push                                                                                                        | `release-package.yml`         | `github.token`, per-job                                                                                             | 0    |
+| Cosign signing key                                                                                               | `release-package.yml`         | keyless, Fulcio + OIDC                                                                                              | 0    |
+| Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer` | cert-manager issues and rotates                                                                                     | 0    |
+| `CORE_SIGNING_SECRET`                                                                                            | every pod via `envFrom`       | shared static HMAC                                                                                                  | 1    |
+| `PORTAL_IDENTITY_SECRET`                                                                                         | every pod via `envFrom`       | shared static HMAC, portal mints                                                                                    | 1    |
+| `DATABASE_URL`                                                                                                   | every pod via `envFrom`       | static password, no rotation path                                                                                   | 1    |
+| `PORTER_DEPLOY_API_TOKEN`                                                                                        | every pod via `envFrom`       | Admin-role token; used for sandboxes and for app publishing[^porterboth]                                            | 1    |
+| `NPM_TOKEN`                                                                                                      | `publish-cli.yml:89`          | static automation token                                                                                             | 1    |
+| `imagePullSecrets`                                                                                               | `values.yaml`                 | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                         | 1    |
+| `CONNECTOR_SECRET_KEY`                                                                                           | every pod via `envFrom`       | static encryption key, one value                                                                                    | 2    |
+| `AUTH_SIGNING_JWK`                                                                                               | every pod via `envFrom`       | static P-256 private key                                                                                            | 2    |
+| `CAPABILITY_SECRET`                                                                                              | every pod via `envFrom`       | static HMAC, one value                                                                                              | 2    |
+| `SKILL_SIGNING_SECRET`                                                                                           | every pod via `envFrom`       | static HMAC, one value                                                                                              | 2    |
+| `AUTH_TOKEN_SECRET`                                                                                              | every pod via `envFrom`       | static HMAC, one value                                                                                              | 2    |
+| `PORTAL_SESSION_SECRET`                                                                                          | every pod via `envFrom`       | static cookie key, one value                                                                                        | 2    |
+| `DEPLOY_APPS_SESSION_SECRET`                                                                                     | core                          | static cookie key, undeclared by the CLI                                                                            | 2    |
+| `AWS_DEPLOY_GATE_SECRET`                                                                                         | core                          | static HMAC, one value                                                                                              | 2    |
+| `AUTH_CLIENT_SECRET`                                                                                             | every pod via `envFrom`       | CLI-generated; becomes in-process after B1, never deployed                                                          | 1    |
+| `DATABASE_POOL_URL`                                                                                              | operator-supplied             | must carry the same credentials as `DATABASE_URL`                                                                   | 2    |
+| `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                                                  | core, Fly targets only        | minted at `-x 8760h`[^flytokens]                                                                                    | 2    |
+| `ANTHROPIC_API_KEY`                                                                                              | every pod via `envFrom`       | static vendor key; Anthropic WIF is GA                                                                              | 1    |
+| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`                                                                           | core                          | static vendor keys; rotatable through admin APIs                                                                    | 3    |
+| `MODEL_GATEWAY_API_KEY`                                                                                          | core                          | static bearer, undeclared by the CLI                                                                                | 3    |
+| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`                                                                             | durable store                 | encrypted at rest, no vendor rotation API                                                                           | 3    |
+| `SLACK_SIGNING_SECRET`                                                                                           | core, env only                | no stored path, no vendor rotation API                                                                              | 3    |
+| `SPRITES_TOKEN`, `E2B_API_KEY`, `MODAL_TOKEN_*`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY`                         | core                          | dashboard-minted; moot on this path once B4 lands                                                                   | 3    |
+| `SECURITY_SCREEN_PROXY_TOKEN`                                                                                    | core                          | static bearer to a third-party screen                                                                               | 3    |
+| `RESEND_API_KEY`                                                                                                 | every pod via `envFrom`       | static vendor key; rotatable through Resend's API                                                                   | 3    |
+| `SMTP_PASSWORD`                                                                                                  | auth                          | dashboard-minted, no vendor rotation API                                                                            | 3    |
+| `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                                                    | core                          | ESO-carried; human-rotated at the IdP, propagates restart-free; PKCE public client removes it where the IdP permits | 2    |
+| `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` | core                          | same as above, and undeclared by the CLI                                                                            | 2    |
+| `OIDC_CLIENT_SECRET` (external IdP)                                                                              | portal                        | ESO-carried; `private_key_jwt` removes it where the IdP supports it                                                 | 2    |
 
 "Every pod via `envFrom`" is the Helm chart today. Under Porter the operator
 passes each value by hand with `--secrets`, which at least lets them scope it,
@@ -605,18 +607,27 @@ the session with an inline policy[^broker].
 
 ### Phase D: contain what remains
 
-Tier 3 splits into two groups, and the doc should be honest about which is
+Tier 3 splits into three groups, and the doc should be honest about which is
 which.
 
+**OAuth client secrets: ESO-carried, human-rotated at the IdP.** This group is
+the connector client secrets — Google, Dropbox, Linear, and the four the CLI never declares (`SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`) — and the
+portal's `OIDC_CLIENT_SECRET` when an external identity provider is in use. The
+previous revision put these under "can never meet the rotation bar," which
+conflated two things. Rotation cannot be _automated_, because each IdP mints
+the secret in a dashboard with no API to mint another. But the secret can be
+_carried_ by ESO with no code change and rotated by a human without a restart,
+and for some providers it can be removed outright. Its own subsection follows.
+
 **Can never meet the rotation bar.** `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
-`SLACK_SIGNING_SECRET`, the Google, Dropbox, and Linear OAuth client secrets, an
-external `OIDC_CLIENT_SECRET`, and `SMTP_PASSWORD`. Each is minted in a vendor
-dashboard with no API to rotate it. For these the `qm doctor` age report is the
-ceiling. Two mechanics: the Slack bot and app tokens already live in the durable
-store encrypted at rest[^slackstore], but `SLACK_SIGNING_SECRET` has no stored
-path and is read only from environment, so giving it one is a small piece of
-real work. And on Kubernetes, anything a pod needs at boot is an
-`ExternalSecret` per service, not a hand-maintained `secretEnv` map.
+`SLACK_SIGNING_SECRET`, and `SMTP_PASSWORD`. Each is minted in a vendor
+dashboard with no API to rotate it and no client-side mechanism that removes
+it. For these the `qm doctor` age report is the ceiling. Two mechanics: the
+Slack bot and app tokens already live in the durable store encrypted at
+rest[^slackstore], but `SLACK_SIGNING_SECRET` has no stored path and is read
+only from environment, so giving it one is a small piece of real work. And on
+Kubernetes, anything a pod needs at boot is an `ExternalSecret` per service,
+not a hand-maintained `secretEnv` map.
 
 **Rotatable through a vendor admin API.** Verified: OpenAI, whose project
 service accounts return an unredacted key; OpenRouter, through its management
@@ -627,9 +638,67 @@ and `SECURITY_SCREEN_PROXY_TOKEN` depend on what the gateway and screen vendors
 offer. The sandbox vendor keys are moot on this path once B4 lands, since Porter
 is the backend they would replace.
 
-For all of it: declare `MODEL_GATEWAY_API_KEY` and `DEPLOY_APPS_SESSION_SECRET`
+For all of it: declare `MODEL_GATEWAY_API_KEY`, `DEPLOY_APPS_SESSION_SECRET`, `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`
 in the CLI spec list. A secret core requires but the deployment tooling has
 never heard of cannot be validated, routed, or rotated.
+
+### OAuth client secrets under ESO
+
+Core resolves a connector's client credentials in two steps: the durable
+connector store first, then `SecretSource`[^clientresolver]. The store is the
+admin-UI path — per-org, encrypted with `CONNECTOR_SECRET_KEY`. The fallback is
+the one place `SecretSource` is wired today, which means the ESO path already
+exists: on EKS, `SECRETS_BACKEND=aws` under IRSA reads the client secret from
+Secrets Manager with no ESO at all; on GKE, AKS, or on-prem, an
+`ExternalSecret` syncs it from the cloud secret manager into core's own
+`Secret`, mounted as a file, and the Phase A seam reads it there. Either way a
+human still mints the secret in the IdP's dashboard and writes it to the secret
+manager; from that point on, propagation is automatic and restart-free.
+
+Three things follow.
+
+**The store must not shadow ESO.** A durable-store record wins over the ESO
+value, so an operator who enters a client secret in the admin UI silently
+disables the managed path for that provider. When ESO manages a provider, the
+store must hold no record for it. Add a `qm doctor` finding and an admin
+Connectors-tab warning when both are present; the cleaner fix is a
+deployment-level switch that makes the store path read-only for client
+credentials, so the UI shows the ESO-managed client id and never accepts a
+secret.
+
+**Rotation is safe on the qm side and conditional on the IdP side.** These
+secrets are not in the single-value set: core presents the secret to the IdP
+and never verifies with it, so there is no overlap-window outage in qm and no
+A2 dependency. User grants survive rotation, since refresh tokens are bound to
+the client id, not the secret; nobody re-consents. The one window is at the
+IdP: if it allows only one active secret, token exchanges and refreshes fail
+between the IdP taking the new value and ESO delivering it. Google allows
+multiple active secrets per client, which closes that window; confirm for each
+other provider before rotating one in production.
+
+**Some can be removed.** The OAuth layer already implements PKCE with S256 and
+uses it for X[^pkce], but the token exchange always sends the client secret and
+the resolver throws without one — there is no public-client branch. Making
+`secret` optional in `ResolvedClient` and omitting `client_secret` when it is
+absent is a small change, and for any provider whose IdP accepts a
+public-client authorization-code flow with PKCE, the secret then disappears.
+Dropbox documents PKCE for exactly that case. Google's Web application client
+type still requires a secret even with PKCE. Verify Linear, Notion, and GitHub
+before assuming either way. A public client gives up client authentication at
+the token endpoint, which is a real if small regression for a server-side app;
+the redirect-URI binding and the PKCE verifier are what remain, and they are
+enough for the trade.
+
+Two further mechanisms, for completeness. `private_key_jwt` (RFC 7523 §2.2) is
+the confidential-client method that replaces a shared secret with a signed
+assertion, and the Phase C KMS key would sign it; none of the seven connector
+IdPs support it, but the portal's external identity provider might, since
+Entra, Okta, and Auth0 do. And for a Google Workspace organization, a service
+account with domain-wide delegation bound through GKE Workload Identity acts as
+any user with no secret anywhere — but it replaces user consent with
+admin-granted impersonation, which contradicts the security model in
+`SECURITY.md` where the agent acts as the person with their credentials. It is
+listed so nobody rediscovers it as a shortcut; it is not recommended.
 
 ### What about Bedrock and SES?
 
@@ -753,6 +822,11 @@ author. Each is folded into the phase it affects; this list is the record.
    accepted, then the database with the password path kept until IAM or
    CloudNativePG is proven. The one gap is in-flight turns during a roll, which
    the risk table covers.
+7. **Connector OAuth client secrets.** ESO-managed. Carried from the cloud
+   secret manager into core's own `Secret` and read through the seam; the
+   durable-store path yields to ESO and must not hold a record for a managed
+   provider. Removed outright via PKCE public client where the IdP permits it.
+   Folded into Phase D.
 
 ## Open questions
 
@@ -833,6 +907,12 @@ author. Each is folded into the phase it affects; this list is the record.
 [^claudeharness]: `src/harness/claude-harness.ts:98` lists `ANTHROPIC_AUTH_TOKEN` among the variables passed through to the child process.
 
 [^modelgate]: `src/deployment/secret-schema.ts:37` — `ANTHROPIC_API_KEY` is required when the `model-anthropic` gate is on.
+
+[^clientresolver]: `src/connectors/connector-client-store.ts:124` — `createConnectorClientResolver` returns the durable-store record when one exists and otherwise delegates to `createSecretClientResolver(secretSource)`; `src/wiring.ts:1006` wires it with the layered `secretSource`.
+
+[^pkce]: `src/connectors/oauth.ts:428` sets `pkce: true` for X; `:560` sends `code_challenge` with `S256`; `:112` always includes `client_secret` in the token-exchange body; `:466` throws when no secret resolves.
+
+[^undeclaredoauth]: `src/connectors/oauth.ts` declares `clientSecretEnv` for seven providers; `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` appear in neither `cli/src/secrets.ts` nor `src/deployment/secret-schema.ts`.
 
 [^ecstaskprot]: `src/wiring.ts:1961` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
 
