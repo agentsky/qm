@@ -72,8 +72,8 @@ apart. They share a protocol and share nothing else.
   KMS cover what is needed. On Kubernetes, ESO is not a new product; it is the
   standard carrier, and this design depends on it.
 - Inventing federation where no vendor offers it. Slack does not federate and
-  neither does OpenRouter; those are contained, not removed. Anthropic does,
-  which is Phase B5, and OpenAI reportedly does, pending verification there.
+  neither does OpenRouter; those are contained, not removed. Anthropic and OpenAI
+  both do, which is Phase B5.
 
 ## Where the secrets are today
 
@@ -218,7 +218,8 @@ Tiers are defined in the next section.
 | `DATABASE_POOL_URL`                                                                                              | operator-supplied             | must carry the same credentials as `DATABASE_URL`                                                                        | 2     |
 | `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                                                  | core, Fly targets only        | minted at `-x 8760h`[^flytokens]                                                                                         | 2     |
 | `ANTHROPIC_API_KEY`                                                                                              | every pod via `envFrom`       | static vendor key; Anthropic WIF is GA                                                                                   | 1     |
-| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`                                                                           | core                          | rotatable through admin APIs; OpenAI reportedly federates, unverified — see B5                                           | 2     |
+| `OPENAI_API_KEY`                                                                                                 | core                          | static vendor key; OpenAI WIF is GA                                                                                      | 1     |
+| `OPENROUTER_API_KEY`                                                                                             | core                          | rotatable through its management-keys API; root in the rotation Job                                                      | 2     |
 | `MODEL_GATEWAY_API_KEY`                                                                                          | core                          | static bearer, undeclared by the CLI                                                                                     | 3     |
 | `SLACK_BOT_TOKEN`                                                                                                | durable store                 | Slack token rotation, opt-in; needs refresh handling in the installation store                                           | 2     |
 | `SLACK_APP_TOKEN`                                                                                                | durable store                 | encrypted at rest, no vendor rotation API                                                                                | 3     |
@@ -509,24 +510,23 @@ compare, so that check changes under both designs.
 
 **RDS.** The previous revision mixed two authentication modes on one role:
 direct IAM with `rds_iam` granted to the application role, and RDS Proxy
-holding a password for that same username. Once `rds_iam` is granted, the role
-authenticates only with IAM tokens, so the proxy's password login for it stops
-working; the two cannot coexist on one role. Pick one topology. **End-to-end
-IAM**: core authenticates to the proxy with an IAM token from its
-ServiceAccount via IRSA or Pod Identity, and the proxy authenticates to
-PostgreSQL with IAM as well, so `rds_iam` is granted and no password exists for
-the application role anywhere. The external review cites AWS documentation for
-this proxy mode; it could not be fetched from this session and is open question
-2 until confirmed. **Separate roles**: if only client-to-proxy IAM is
-available, the proxy keeps a password-authenticated backend role that never has
-`rds_iam`, distinct from the IAM-authenticated direct role, and the two
-identities are named explicitly in grants and in `pooledDatabaseUrl`. Either
-way the master password remains, relocated by `manage_master_user_password`
-into an auto-rotating secret; the `GRANT rds_iam` bootstrap needs a
-password-authenticated session and the module connects as the master user
-today, so the migration creates the application role first; and the migration
-cannot keep a password fallback on a role that has been switched to IAM — the
-fallback is the separate role, never a second credential on the same one.
+holding a password for that same username. Once `rds_iam` is granted the role
+authenticates only with IAM tokens — AWS states one authentication method per
+PostgreSQL user, with IAM taking precedence[^rdsiamexcl] — so the proxy's
+password login for it stops working. The clean topology is end-to-end IAM,
+which RDS Proxy supports as of September 2025: `DefaultAuthScheme=IAM_AUTH`
+makes the proxy use IAM both for client connections and for its own
+connection to the database, with no Secrets Manager entry for the application
+role[^rdsproxye2e]. So: the proxy's role holds `rds-db:connect` for the
+application role; core authenticates to the proxy with an IAM token from its
+ServiceAccount via IRSA or Pod Identity; `rds_iam` is granted to the
+application role; and no password exists for that role anywhere. The master
+password remains, relocated by `manage_master_user_password` into an
+auto-rotating secret, and the `GRANT rds_iam` bootstrap needs a
+password-authenticated session as the master user, so the migration creates
+the application role first. The migration cannot keep a password fallback on a
+role switched to IAM; if a fallback is wanted during cutover it is a second,
+separately named role, never a second credential on the same one.
 `sslmode=no-verify` is a separate fix through `DATABASE_CA_CERT`.
 
 **CloudNativePG.** No IAM auth exists in-cluster, and A2 does not help: the
@@ -613,7 +613,7 @@ is the only route that removes the token rather than storing it somewhere
 nicer. Until both land, the token should at minimum be scoped to core's
 `ExternalSecret` alone.
 
-### Phase B5: federate the model key
+### Phase B5: federate the model keys
 
 Anthropic's Workload Identity Federation is GA on the Claude API, which moves
 `ANTHROPIC_API_KEY` from irreducible to deleted and does so on every cloud and
@@ -669,15 +669,32 @@ path qm takes, for four reasons the design has to state:
    development a shell `ANTHROPIC_API_KEY` keeps winning for the same reason,
    which is the intended behavior.
 
-OpenRouter offers no federation and stays in Phase D. The external review
-reports that OpenAI documents workload identity federation — exchange of a
-Kubernetes projected token for a short-lived access token bound to a project
-service account, with the managed-cloud variants named. That page could not be
-fetched from this session and is open question 1. If it holds, `OPENAI_API_KEY`
-moves to Tier 1 for federated deployments, the `CredentialSource` from this
-phase carries a second issuer, and admin-key rotation becomes the compatibility
-fallback rather than the design. Until then it stays in Phase D at Tier 2, and
-any account-level restriction is stated as such rather than as a vendor limit.
+**OpenAI federates the same way.** The previous revision recorded this as an
+unverified report. It is verified now from OpenAI's SDKs and documentation:
+the Python and Node clients take a `workload_identity` option, mutually
+exclusive with the API key, that performs an RFC 8693 token exchange against a
+Workload Identity Provider registered in the OpenAI Platform and returns a
+short-lived access token bound to a Platform service account[^openaiwif]. The
+Python SDK ships providers for a Kubernetes projected token, the Google
+metadata server, and Azure managed identity, plus a custom JWT subject-token
+provider, and refreshes 1200 seconds before expiry by default. OpenAI verifies
+the subject token through OIDC discovery on the provider and caches JWKS for
+600 seconds; the principal is a service account that an administrator creates
+beforehand, since the exchange never creates one. Legacy Secret-stored
+ServiceAccount tokens are rejected; the token must be projected. So the shape
+is Anthropic's exactly: a second projected token with OpenAI's audience
+(`https://api.openai.com/v1`) on core's ServiceAccount, an Identity Provider
+for the cluster issuer, a service-account mapping on the subject, and the
+exchange in core through the same `CredentialSource`. The four consequences
+above carry over unchanged, and so does the proxy: core already passes
+`OPENAI_BASE_URL` to the Pi runtime and to the Codex child[^openaibase], so the
+authenticated proxy that fronts the Claude API fronts the OpenAI API as well.
+One wrinkle is Codex-specific: the harness writes the key into the child's
+`auth.json` as `auth_mode: "apikey"`[^codexauth], and whether the Codex CLI
+accepts a federated access token under that mode, or needs the proxy to strip
+and re-add authentication, has to be tested rather than assumed.
+
+OpenRouter offers no federation and stays in Phase D.
 
 ### Phase B6: image pulls without a pull secret
 
@@ -782,10 +799,10 @@ the secret in a dashboard with no API to mint another. But the secret can be
 _carried_ by ESO with no code change and rotated by a human without a restart,
 and for some providers it can be removed outright. Its own subsection follows.
 
-**Rotatable, so Tier 2.** Three vendors are verified rotatable through an
-admin API: OpenAI, whose project service accounts return an unredacted key;
-OpenRouter, through its management keys endpoint; and Resend, through its
-create-API-key endpoint. An ESO `Webhook` generator or a scheduled Job closes
+**Rotatable, so Tier 2.** Two vendors are verified rotatable through an
+admin API: OpenRouter, through its management keys endpoint, and Resend,
+through its create-API-key endpoint. OpenAI is federated in B5 and no longer
+belongs here. An ESO `Webhook` generator or a scheduled Job closes
 the loop. Two more join them with a mechanism rather than an API:
 
 - **`SLACK_BOT_TOKEN`.** Slack's token rotation is an opt-in, per-app, one-way
@@ -1019,18 +1036,20 @@ author. Each is folded into the phase it affects; this list is the record.
    calling workflow. Two entry points to register or one to drop, the
    historical `npm deprecate` to remove, and the npm floor to confirm. Folded
    into B3.
+10. **OpenAI workload identity federation.** Verified from the SDKs and
+    documentation: RFC 8693 exchange of a projected ServiceAccount token for
+    a short-lived access token bound to a Platform service account.
+    `OPENAI_API_KEY` is Tier 1; folded into B5. The Codex `auth.json` mode is
+    the one thing left to test.
+11. **RDS Proxy end-to-end IAM.** Verified from the RDS API model:
+    `DefaultAuthScheme=IAM_AUTH` makes the proxy authenticate to the database
+    with IAM, so the application role carries no password and no Secrets
+    Manager entry. Folded into B2.
 
 ## Open questions
 
-1. **OpenAI workload identity federation.** The external review reports that
-   OpenAI documents exchanging a Kubernetes projected token for a short-lived
-   access token bound to a project service account. Not fetchable from this
-   session. If confirmed, `OPENAI_API_KEY` moves to Tier 1 and B5 carries a
-   second issuer.
-2. **RDS Proxy end-to-end IAM.** The external review cites AWS documentation
-   for a proxy mode in which the proxy itself authenticates to PostgreSQL with
-   IAM. Not fetchable from this session. If confirmed, B2 on RDS uses it; if
-   not, B2 uses separate roles.
+None at this revision. Every question raised since the first draft is either
+folded into a phase or recorded above as a decision.
 
 ## References
 
@@ -1129,6 +1148,16 @@ author. Each is folded into the phase it affects; this list is the record.
 [^cnpgreload]: CloudNativePG, _PostgreSQL Role management_ — "A `DatabaseRole` is applied when its specification or its password Secret changes"; "Password changes in labeled Secrets are applied immediately, while changes in unlabeled Secrets are only applied at a subsequent reconciliation." No coordination with consuming pods is described. Fetched from the cloudnative-pg source.
 
 [^wiflifetime]: Anthropic, _Workload Identity Federation_ — "the lesser of (a) the rule's `token_lifetime_seconds` (default 3,600 seconds) and (b) twice the remaining lifetime of the IdP JWT you presented"; the SDK refreshes at expiry minus 120 s (advisory) and minus 30 s (mandatory) and re-reads the token file on every exchange.
+
+[^openaiwif]: OpenAI Python SDK, `README.md` on `main` — section "Workload Identity Authentication": `k8s_service_account_token_provider`, `gcp_id_token_provider(audience="https://api.openai.com/v1")`, `azure_managed_identity_token_provider`, a custom `token_type: "jwt"` provider, `refresh_buffer_seconds` default 1200; `_client.py` takes `workload_identity`; the Node client's `workloadIdentity` is "OAuth2 token exchange authentication. Mutually exclusive with `apiKey`." Changelog: short-lived token support in 2.31.0 (2026-04-08). OpenAI docs: <https://developers.openai.com/api/docs/guides/workload-identity-federation> and the Kubernetes guide beneath it, which state RFC 8693 exchange, OIDC discovery with a 600-second JWKS cache, a Platform service account as the principal, and that legacy Secret-stored tokens are unsupported. The SDK sources were fetched from this session; the docs were read through search excerpts.
+
+[^openaibase]: `src/model/provider-endpoints.ts:17` maps the OpenAI provider to `OPENAI_BASE_URL`; `src/config.ts:1185` sets it on the Codex child environment; `src/harness/codex-harness.ts:233` passes it through.
+
+[^codexauth]: `src/harness/codex-harness.ts:272` — when `OPENAI_API_KEY` is set, the harness writes `{ auth_mode: "apikey", OPENAI_API_KEY }` into the child's `auth.json`.
+
+[^rdsiamexcl]: AWS re:Post, _Connect to an RDS PostgreSQL instance using IAM authentication_ — if `rds_iam` is added to a user, "IAM authentication takes precedence over password authentication, so the user must log in as an IAM user"; "you can only use one authentication method per user." Read through search excerpts; the AWS docs host was unreachable.
+
+[^rdsproxye2e]: AWS SDK for Go v2, `service/rds/api_op_CreateDBProxy.go` on `main`, doc comment on `DefaultAuthScheme`: "The default authentication scheme that the proxy uses for client connections to the proxy and connections from the proxy to the underlying database. Valid values are NONE and IAM_AUTH. When set to IAM_AUTH, the proxy uses end-to-end IAM authentication to connect to the database." Fetched from this session. Announced in _Amazon RDS Proxy announces support for end-to-end IAM authentication_, AWS What's New, September 2025, for MySQL and PostgreSQL in all RDS Proxy regions.
 
 [^ecstaskprot]: `src/wiring.ts:1961` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
 
