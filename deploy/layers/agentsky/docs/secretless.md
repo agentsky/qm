@@ -886,9 +886,11 @@ on EKS, GKE, AKS, and on-prem alike with no Bedrock provider, and
 `MODEL_PROVIDERS` has no Bedrock entry to begin with[^providers]. It is no
 longer the route to a keyless model call.
 
-SES is Tier 2, as Phase D says. The SMTP credential is derived from an IAM
-access key and rotates through the published Lambda rotation, which is what
-puts `SMTP_PASSWORD` at Tier 2 on SES and Tier 3 on any other relay. An
+SES is Tier 2, as Phase D says. The existing route is the SMTP interface,
+which the CLI tells operators to configure with "the SMTP credential, not an AWS
+access key"[^ses]; that credential is derived from an IAM access key and rotates
+through the published Lambda rotation, which is what puts `SMTP_PASSWORD` at
+Tier 2 on SES and Tier 3 on any other relay. An
 IAM-authenticated SES transport would remove it entirely; that is a new
 transport implementation and a deliberate deferral.
 
