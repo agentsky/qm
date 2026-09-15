@@ -4,7 +4,6 @@ import { emitRunText, type RunStreamEvent } from "./runs/run-stream-events.ts";
 import { createGatewayCatalog } from "./model/gateway-catalog.ts";
 import { createSuggestedActivityService, type SuggestedActivityProfile } from "./suggestions/activities.ts";
 import { createRuntimeService } from "./harness/runtime-control.ts";
-import { createPostgresBrokerSessions, type BrokerSessionStore } from "./auth/broker-sessions.ts";
 import { createDirectFileUploads, type DirectFileUploads } from "./files/direct-file-upload.ts";
 import { createPostgresFileUploadStore } from "./files/file-upload-store.ts";
 import {
@@ -457,7 +456,6 @@ export interface BuiltApp {
   deviceFlowCutover: DeviceFlowCutoverStore;
   featureFlags: FeatureFlagStore;
   replayDedupe?: ReplayDedupe;
-  brokerSessions?: BrokerSessionStore;
   directory: DirectoryStore;
   projects: ProjectStore;
   environments: EnvironmentStore;
@@ -1240,7 +1238,6 @@ export function buildApp(
     processes = config.databaseUrl ? createPostgresProcessRegistry(config.databaseUrl) : createMemoryProcessRegistry();
   }
 
-  const brokerSessions = config.databaseUrl ? createPostgresBrokerSessions(config.databaseUrl) : undefined;
   const replayDedupe = config.databaseUrl ? createPostgresReplayDedupe(config.databaseUrl) : createMemoryReplayDedupe();
   const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
   const credentialUsage = config.databaseUrl
@@ -1304,7 +1301,7 @@ export function buildApp(
   const adminGrantStore = createAdminGrantStore(adminGrantPersist, {
     seed: bootAdminGrantSeed(config.adminGrants, config.orgId, !!config.databaseUrl),
   });
-  const admin = createAdminService(adminGrantStore, { trustedOidcAdminIssuer: config.trustedOidcAdminIssuer });
+  const admin = createAdminService(adminGrantStore);
   const { strategy: memoryStrategy, memory } = createMemoryStrategy(config.memoryStrategy, {
     harness: harness.models,
     memory: baseMemory,
@@ -2113,7 +2110,6 @@ export function buildApp(
     deviceFlowCutover,
     featureFlags,
     ...(replayDedupe ? { replayDedupe } : {}),
-    ...(brokerSessions ? { brokerSessions } : {}),
     directory,
     projects,
     environments,
@@ -2157,7 +2153,6 @@ export function serverDeps(
     ...(config.portalIdentitySecret ? { portalIdentitySecret: config.portalIdentitySecret } : {}),
     ...(config.requireSignedPortalIdentity ? { requireSignedPortalIdentity: true } : {}),
     ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
-    ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
     config: built.config,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
     ...(configuredModel ? { baseModelDefault: configuredModel } : {}),

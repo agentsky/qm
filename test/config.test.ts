@@ -481,22 +481,13 @@ test("DEPLOY_APPS_DOMAIN must be a bare DNS name, normalized to lowercase withou
   assert.throws(() => loadConfig({ DEPLOY_APPS_DOMAIN: "myapp.fly.dev.", ...gate }), /shared platform domain/);
 });
 
-test("the portal session secret doubles as the deploy-apps viewer secret when a login URL exists", () => {
-  const derived = loadConfig({ PORTAL_SESSION_SECRET: "shared", PUBLIC_WEB_URL: "https://qm.example.com" });
-  assert.equal(derived.deployAppsSessionSecret, "shared");
-  assert.equal(derived.deployAppsLoginUrl, "https://qm.example.com");
-  const noUrl = loadConfig({ PORTAL_SESSION_SECRET: "shared" });
-  assert.equal(
-    noUrl.deployAppsSessionSecret,
-    undefined,
-    "no sign-in address means the fallback stays off, not a throw",
-  );
-  const explicit = loadConfig({
-    PORTAL_SESSION_SECRET: "shared",
-    DEPLOY_APPS_SESSION_SECRET: "own",
-    PUBLIC_WEB_URL: "https://qm.example.com",
-  });
+test("the deploy-apps viewer secret comes only from DEPLOY_APPS_SESSION_SECRET", () => {
+  const explicit = loadConfig({ DEPLOY_APPS_SESSION_SECRET: "own", PUBLIC_WEB_URL: "https://qm.example.com" });
   assert.equal(explicit.deployAppsSessionSecret, "own");
+  assert.equal(explicit.deployAppsLoginUrl, "https://qm.example.com");
+  const unset = loadConfig({ PUBLIC_WEB_URL: "https://qm.example.com" });
+  assert.equal(unset.deployAppsSessionSecret, undefined);
+  assert.equal(unset.deployAppsLoginUrl, undefined);
 });
 
 test("the deploy-apps sign-in address defaults to the public web URL", () => {
@@ -523,6 +514,28 @@ test("Codex file OAuth satisfies model onboarding without an API key", () => {
   const config = { ...loadConfig({}), harness: "codex" as const, codexAuthFile: "/local/auth.json" };
   assert.equal(harnessCarriedModelAuth(config), "openai");
   assert.equal(harnessCarriedModelAuth({ ...config, codexAuthFile: undefined }), undefined);
+});
+
+test("retired hosting environment is ignored with one warning naming the Helm chart", () => {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (msg: unknown) => void warnings.push(String(msg));
+  let config;
+  try {
+    config = loadConfig({
+      SECRETS_BACKEND: "aws",
+      SECRETS_PREFIX: "qm-",
+      FLY_APP_NAME: "qm-core",
+      PORTAL_SESSION_SECRET: "x",
+    });
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(config, loadConfig({}));
+  const retired = warnings.filter((w) => w.includes("retired and ignored"));
+  assert.equal(retired.length, 1);
+  assert.match(retired[0]!, /SECRETS_BACKEND, SECRETS_PREFIX, FLY_APP_NAME, PORTAL_SESSION_SECRET are retired/);
+  assert.match(retired[0]!, /Helm chart/);
 });
 
 test("retired brain environment does not configure a runtime integration and warns once", () => {

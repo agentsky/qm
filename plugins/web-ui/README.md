@@ -18,12 +18,12 @@ owned by this plugin. Two processes:
   environments). The real agent loop (model + the three primitives + memory + audit) runs
   server-side in the core's sandbox; the browser is a thin chat client.
 
-**Behind the portal.** When fronted by `plugins/portal` (the public SSO front door), this SPA
-is served at the portal root — the default `WEB_UI_BASE=/` build is the one the portal fronts
-(the old `/web-ui/` prefix is gone; the portal 308-redirects `/web-ui/*` to root for stale
-links). The front-end joins its base via `import.meta.env.BASE_URL` (the `withBase()` helper in
-`core-bridge.ts`), so direct/standalone access and `npm run dev` behave identically.
-Core binds run reads and signals to the portal-verified actor;
+**Behind an identity source.** This SPA is served at the root — `WEB_UI_BASE=/` is the default
+build. The front-end joins its base via `import.meta.env.BASE_URL` (the `withBase()` helper in
+`core-bridge.ts`), so direct/standalone access and `npm run dev` behave identically. In
+production something in front of this service authenticates the user and mints the signed
+`x-portal-identity` header this server verifies; the chart ships no such service.
+Core binds run reads and signals to that verified actor;
 no run bearer is exposed to browser code or placed in a URL. The active-run resume index
 (`/api/runs/active`) is per-process best-effort with a durable core fallback for personal threads.
 
@@ -200,16 +200,15 @@ the CSS media queries, the composer, and the split canvas.
   in your `personal:<you>` scope (identity comes from the cookie, **never** the request body —
   the same trust model as `/api/turn`). The server proxies three routes:
   - `POST /api/webhooks` → core `POST /v1/webhooks`; relays core's response — the webhook, the
-    **absolute** public ingress URL (core builds it from its public base — the portal in prod),
+    **absolute** public ingress URL (core builds it from its public base),
     and the signing secret **once** (auto-generated if you leave it blank; never shown again).
   - `GET /api/webhooks` → core `GET /v1/webhooks`, then **filtered to `owner === you`** (core's
     source-auth list is operator-wide; secrets are already elided by the core).
   - `POST /api/webhooks/:id/disable` → ownership is **verified here first** (core's operator
     disable has no ownership check), mirroring the run-ownership gate, then proxied.
     The inbound ingress (`POST /v1/webhooks/incoming/:id`) is served by the **core** receiver,
-    reached in prod through the **portal**'s one unauthenticated passthrough (the core is not
-    publicly exposed); senders sign with their own per-webhook secret, which is the auth on that
-    path. Dev single-host posts to the core directly.
+    which must be reachable by senders even though core is otherwise private; senders sign with
+    their own per-webhook secret, which is the auth on that path. Dev single-host posts to the core directly.
 - **Cron management** (the **Crons** sidebar view) — create, list, run-now, enable/disable, and
   delete your own scheduled tasks (spec §7), same trust model as webhooks: created with
   `owner = createdBy = you` in your `personal:<you>` scope (identity from the cookie, never the

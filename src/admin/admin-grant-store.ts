@@ -19,7 +19,6 @@ export function grantKey(principalId: string, scopeId: ScopeId, role: AdminRole)
 export interface AdminGrantPersistence {
   all(): Promise<AdminGrant[]>;
   put(g: AdminGrant): Promise<void>;
-  insertIfAbsent(g: AdminGrant): Promise<boolean>;
   remove(principalId: string, scopeId: ScopeId, role: AdminRole): Promise<void>;
 }
 
@@ -33,10 +32,6 @@ export function createMapAdminGrantPersistence(
     async put(g) {
       await map.put(grantKey(g.principalId, g.scopeId, g.role), g);
     },
-    async insertIfAbsent(g) {
-      if (!map.insertIfAbsent) throw new Error("admin grant storage requires atomic insertion");
-      return map.insertIfAbsent(grantKey(g.principalId, g.scopeId, g.role), g);
-    },
     async remove(principalId, scopeId, role) {
       await map.delete(grantKey(principalId, scopeId, role));
     },
@@ -48,7 +43,6 @@ export const createMemoryAdminGrantPersistence = (): AdminGrantPersistence => cr
 export interface AdminGrantStore {
   list(): Promise<AdminGrant[]>;
   add(g: AdminGrant): Promise<void>;
-  addIfAbsent(g: AdminGrant): Promise<boolean>;
   revoke(principalId: string, scopeId: ScopeId, role: AdminRole): Promise<void>;
 }
 
@@ -83,10 +77,6 @@ export function createAdminGrantStore(
     async add(g) {
       await ensureSeeded();
       await persist.put(g);
-    },
-    async addIfAbsent(g) {
-      await ensureSeeded();
-      return persist.insertIfAbsent(g);
     },
     async revoke(principalId, scopeId, role) {
       await ensureSeeded();

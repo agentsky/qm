@@ -1,5 +1,4 @@
 import type { createSuggestedActivityService } from "../suggestions/activities.ts";
-import type { BrokerSessionStore } from "../auth/broker-sessions.ts";
 import type { DirectFileUploads } from "../files/direct-file-upload.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
 import type { ModelVerifier } from "../model/model-verification.ts";
@@ -79,7 +78,6 @@ export interface ServerDeps {
   requireSignedPortalIdentity?: boolean;
   control: ControlService;
   replayDedupe?: ReplayDedupe;
-  brokerSessions?: BrokerSessionStore;
   connectorTokens?: ConnectorTokenStore;
   slackInstallation?: SlackInstallationStore;
   slackInstallationFetch?: typeof fetch;

@@ -210,15 +210,6 @@ deploy_chart() {
   connector_secret_key="$(secret)"
   skill_signing_secret="$(secret)"
 
-  local chart_values optional=()
-  chart_values="$(helm show values "$CHART")"
-  if grep -qE '^[[:space:]]{2}portal:[[:space:]]*$' <<<"$chart_values"; then
-    optional+=(--set services.portal.enabled=false)
-  fi
-  if grep -qE '^[[:space:]]{2}auth:[[:space:]]*$' <<<"$chart_values"; then
-    optional+=(--set services.auth.enabled=false)
-  fi
-
   log "installing the chart as $RELEASE in $NAMESPACE"
   helm upgrade --install "$RELEASE" "$CHART" \
     --namespace "$NAMESPACE" --create-namespace \
@@ -226,7 +217,6 @@ deploy_chart() {
     --set image.tag="$IMAGE_TAG" \
     --set image.pullPolicy=Never \
     --set services.admin.enabled=true \
-    ${optional[@]+"${optional[@]}"} \
     --set publicUrl="$PUBLIC_URL" \
     --set secretEnv.DATABASE_URL="postgres://postgres:postgres@postgres.$NAMESPACE.svc.cluster.local:5432/qm" \
     --set secretEnv.CORE_SIGNING_SECRET="$CORE_SIGNING_SECRET" \
@@ -250,6 +240,13 @@ wait_rollouts() {
     log "waiting for $deployment"
     kubectl rollout status -n "$NAMESPACE" "$deployment" --timeout="$ROLLOUT_TIMEOUT"
   done
+}
+
+service_for() {
+  local name
+  name="$(kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=$1" -o name)"
+  [[ -n "$name" ]] || fail "the chart rendered no $1 service"
+  printf '%s' "$name"
 }
 
 start_port_forward() {
@@ -290,11 +287,11 @@ signed_turn() {
 }
 
 verify() {
-  start_port_forward "svc/$RELEASE-core" "$CORE_LOCAL_PORT" 8080
+  start_port_forward "$(service_for core)" "$CORE_LOCAL_PORT" 8080
   expect_status "http://127.0.0.1:$CORE_LOCAL_PORT/healthz" 200
   signed_turn "http://127.0.0.1:$CORE_LOCAL_PORT"
 
-  start_port_forward "svc/$RELEASE-web-ui" "$WEB_LOCAL_PORT" 8080
+  start_port_forward "$(service_for web-ui)" "$WEB_LOCAL_PORT" 8080
   expect_status "http://127.0.0.1:$WEB_LOCAL_PORT/healthz" 200
   expect_status "http://127.0.0.1:$WEB_LOCAL_PORT/admin/" 200
 }

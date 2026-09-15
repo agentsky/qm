@@ -21,7 +21,6 @@ const DEV_SECURITY_SECRET_KEYS = [
   "CAPABILITY_SECRET",
   "PORTAL_IDENTITY_SECRET",
   "CONNECTOR_SECRET_KEY",
-  "PORTAL_SESSION_SECRET",
 ] as const;
 
 export function completeDevSecuritySecrets(env: Record<string, string>, seed: string): void {

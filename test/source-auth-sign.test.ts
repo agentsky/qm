@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { canonicalPayload, signRequest, signedRequestHeaders } from "../src/auth/source-auth-sign.ts";
 import { signRequest as legacySignRequest } from "../src/auth/source-auth.ts";
+import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
 
 test("canonicalPayload binds method + path + body with newlines", () => {
   assert.equal(canonicalPayload("POST", "/v1/turns?x=1", "{}"), "POST\n/v1/turns?x=1\n{}");
@@ -35,4 +36,13 @@ test("signedRequestHeaders: no secret → just the base; secret → x-timestamp 
   assert.equal(headers["x-timestamp"], "1000");
   assert.equal(headers["x-signature"], signRequest("s", 1000, canonicalPayload("POST", "/v1/blobs", "deadbeef")));
   assert.equal(headers["content-type"], "application/json");
+});
+
+test("signedHeaders signs /d/ ingress with the principal as the canonical tail (core-verifiable)", () => {
+  const secret = "web-ui-source-auth-secret";
+  const path = "/d/dep-1/assets/app.js?q=a+b%2Fc&n=1";
+  const principal = "U00000001";
+  const headers = signedHeaders(secret, "GET", path, "", principal);
+  const ts = Number(headers["x-timestamp"]);
+  assert.equal(headers["x-signature"], signRequest(secret, ts, canonicalPayload("GET", path, principal)));
 });

@@ -334,10 +334,10 @@ function clearPortalAttempt(): void {
 function portalGate() {
   if (portalAttemptedRecently())
     return gateShell(html`
-      <h1>Sign in through the portal</h1>
+      <h1>Sign-in didn't take</h1>
       <p class="signin-body">
-        This surface is reached through the portal, and signing in there didn't produce a session for it. Open the
-        portal address directly rather than this one.
+        This instance is reached through a sign-in service that vouches for you to it, and signing in there didn't
+        produce a session. Open that address directly rather than this one.
       </p>
       <div class="hint">
         If you opened this surface's own address, that's the cause — it can't authenticate anyone on its own.
@@ -403,7 +403,7 @@ function devGate(gate: { value?: string; error?: string; pending?: boolean }) {
       <h1>Dev sign-in</h1>
       <p class="signin-body">
         No identity provider is configured, so this instance trusts a local cookie. Set
-        <b>CORE_SIGNING_SECRET</b> and run the portal to use real sign-in.
+        <b>CORE_SIGNING_SECRET</b> and put a sign-in service in front of this app to use real sign-in.
       </p>
       <label for="dev-principal">Principal</label>
       <input

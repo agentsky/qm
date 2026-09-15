@@ -30,7 +30,6 @@ import { contextPolicyRoutes } from "./context-policy.ts";
 import { deploymentLayerRoutes } from "./deployment-layer.ts";
 import { egressAuditRoutes } from "./egress-audit.ts";
 import { slackEventRawRoutes } from "./slack-events.ts";
-import { authBrokerRoutes } from "./auth-broker.ts";
 import { loopItemRoutes } from "./loop-items.ts";
 import { searchRoutes } from "./search.ts";
 import { userModelAuthRoutes } from "./user-model-auth.ts";
@@ -82,6 +81,5 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...loopItemRoutes,
   ...deploymentRoutes,
   ...egressAuditRoutes,
-  ...authBrokerRoutes,
   ...userModelAuthRoutes,
 ];

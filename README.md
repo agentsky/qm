@@ -69,7 +69,7 @@ flowchart LR
 
 For durability, set `DATABASE_URL` and `SESSION_STORE=postgres` — without it, sessions
 live in process memory and vanish on restart. To exercise a branch end to end — core,
-Slack, web, admin, portal, against a real model and real Postgres — run
+Slack, web, admin, against a real model and real Postgres — run
 `npm run dev-instance`.
 
 ## Architecture
@@ -78,8 +78,8 @@ Every turn runs through a central core, which can use a variety of models and ha
 to generate the response. A Postgres persistence layer holds user data, session history,
 and other durable state. The agent has a small, fixed tool surface; one of those tools is
 `execute`, which runs commands in the scope's own isolated sandbox — its durable computer,
-where installed tools stay installed. The web UI and admin panel share one service; the portal and optional built-in
-auth broker share another. These modules communicate with core over its HTTP API.
+where installed tools stay installed. The web UI and admin panel share one service, which
+communicates with core over its HTTP API.
 Slack is an optional in-process plugin that core starts
 and supervises through a direct service client.
 
@@ -239,7 +239,7 @@ it prepares a clean upstream branch without private deployment data or history.
 - [`deploy/README.md`](./deploy/README.md) — the images, the Helm chart, and the deployment layer
 - [`docs/helm-per-service-secrets.md`](./docs/helm-per-service-secrets.md) — per-service secret scoping
 - [`.env.example`](./.env.example) — every knob, documented in place
-- [`plugins/`](./plugins) — the surfaces (Slack, web UI, admin, portal)
+- [`plugins/`](./plugins) — the surfaces (Slack, web UI, admin)
 
 ## License
 

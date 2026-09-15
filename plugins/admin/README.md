@@ -5,8 +5,8 @@ spec §14, delivered as an _added_ plugin (like the Slack plugin). It is a separ
 process that talks to the core **only** over the admin governance API; the core has
 zero dependency on it. Don't run it and nothing about the core changes.
 
-You reach it through the **portal** (real SSO); the surface trusts the portal-synthesized
-`admin=<sub>` cookie as identity and asks the **core** whether that principal is an admin
+You reach it through whatever authenticates users in front of it; the surface trusts the
+signed `x-portal-identity` header as identity and asks the **core** whether that principal is an admin
 (`GET /api/whoami` → core `GET /v1/admin/whoami` → `canAdminister`). It holds **no admin id list**
 of its own. Pick a scope, then either **edit governance** (command policy, SOUL, egress),
 **manage users** (the org-wide **Users** tab), or read the **observability** views — Metrics,
@@ -17,7 +17,7 @@ authoritative grant list, and lets an org_admin **promote** a principal to org_a
 or **revoke** — every mutation attributed and audited, the last org_admin protected.
 The **+** on the Users card invites an **external user** (an address outside the org's
 Slack / email domain) with a role and an expiry; they get an invitation email and sign in
-at the portal with that address until it expires. Invitation emails go out through Resend
+with that address until it expires. Invitation emails go out through Resend
 when core has `RESEND_API_KEY` and `AUTH_EMAIL_FROM`; without them the user is still added
 and the dashboard shows the sign-in link for you to share. External users are listed in
 their own card, where **Revoke** ends access immediately and leaves the row listed as
@@ -51,8 +51,9 @@ CORE_API_URL=http://localhost:8080 CORE_ORG_ID=acme PORT=8090 npm start
 No build step, no runtime dependencies (pure `node:http` + native TS). Node 24+.
 
 Env: `CORE_API_URL` (default `http://localhost:8080`), `CORE_ORG_ID` (default `acme`),
-`PORT` (default `8090`) and `CORE_SIGNING_SECRET` (required outside isolated development). The
-portal also supplies a short-lived `x-portal-identity` token, which this surface forwards to core.
+`PORT` (default `8090`) and `CORE_SIGNING_SECRET` (required outside isolated development).
+Whatever fronts this surface supplies a short-lived `x-portal-identity` token, which it
+verifies under `PORTAL_IDENTITY_SECRET` and forwards to core.
 There is **no** `ADMIN_PRINCIPALS` — admin identity + role + scope live solely in the core's
 durable, mutable `admin_grants` store, and this surface derives admin status from it via
 `/api/whoami`. `ADMIN_GRANTS` (env) is now only the **one-time seed** for an empty store; after
@@ -61,8 +62,9 @@ runtime grants).
 
 ## How it stays safe
 
-- **The browser never holds an admin credential.** The portal supplies the verified identity in a
-  short-lived signed header; the compatibility cookie alone is not accepted when auth is configured.
+- **The browser never holds an admin credential.** The identity source in front supplies the
+  verified identity in a short-lived signed header; the compatibility cookie alone is not
+  accepted when auth is configured.
   Core verifies the token and decides admin-ness on every action.
 - **All authority is enforced in the core**, not here (spec §14): the core authorizes
   every read and write against `admin_grants` (`canAdminister`) and refuses scopes you don't

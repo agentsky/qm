@@ -1,7 +1,7 @@
 # Deployment
 
 `deploy/<service>/Dockerfile` builds the service images the Helm chart runs: `core`,
-`web-ui`, `admin`, `portal`, `auth`, and `egress-proxy`. The release workflow
+`web-ui`, `admin`, and `egress-proxy`. The release workflow
 [`.github/workflows/release-package.yml`](../.github/workflows/release-package.yml) builds
 and cosign-signs each one into `ghcr.io/yc-software/qm`;
 [`scripts/deploy-helm.sh`](../scripts/deploy-helm.sh) builds and pushes the same set to
@@ -21,24 +21,20 @@ material there, and that material never travels back upstream.
 
 ## Topology
 
-The public portal is the only Internet-facing service. It authenticates users
-over OIDC and proxies the private Web UI and admin surfaces. Core, Postgres, and
-agent computers stay private. The optional Slack surface runs inside core over
-outbound Socket Mode.
+The ingress points at `web-ui`, which serves the assistant at `/` and the admin
+surface at `/admin`. Core, Postgres, and agent computers stay private. The
+optional Slack surface runs inside core over outbound Socket Mode.
 
-By default the OIDC provider is the `auth` service qm deploys for itself: a
-sign-in broker that emails a one-time link. It is private like every other
-non-portal service — the portal republishes only its two browser-facing routes
-under `/idp/`, so the issuer and the sign-in pages live on the portal's own
-origin while the token, userinfo, and JWKS calls stay on the private network.
-The self-hoster supplies an admin address, a verified sender, and a Resend key
-or SMTP credentials. Core receives the same `RESEND_API_KEY`
-and `AUTH_EMAIL_FROM`, which let admins email invitations to external users from
-the admin Users tab or by chatting with QM; both are optional on core, and
-without them the invitation is still created and the sign-in link is shared by
-hand. Disabling the `auth` service hands
-sign-in back to an external identity provider, which then has to register the
-exact `<publicUrl>/auth/callback` redirect.
+The chart ships no identity provider. `web-ui` and `admin` establish who the
+viewer is from a signed `x-portal-identity` header, verified with
+`PORTAL_IDENTITY_SECRET`; something in front of `web-ui` has to authenticate the
+user and mint that header. Until you put one there, the surfaces have no way to
+sign anyone in.
+
+Core receives `RESEND_API_KEY` and `AUTH_EMAIL_FROM`, which let admins email
+invitations to external users from the admin Users tab or by chatting with QM;
+both are optional, and without them the invitation is still created and the
+sign-in link is shared by hand.
 
 Connector OAuth clients and the optional Slack bot token pair are entered at
 the authenticated admin connector URL. Secrets are

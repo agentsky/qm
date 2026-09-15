@@ -32,7 +32,9 @@ test("every built image has a Dockerfile in the tree the Helm chart deploys from
   const workflow = readFileSync(".github/workflows/release-package.yml", "utf8");
 
   const dockerfiles = [...workflow.matchAll(/^ +dockerfile: (\S+)$/gm)].map((m) => m[1] ?? "");
-  assert.ok(dockerfiles.length >= 6);
+  assert.ok(dockerfiles.length >= 5);
+  const release = readFileSync(".github/workflows/release.yml", "utf8");
+  assert.match(release, new RegExp(`jq -e 'length == ${dockerfiles.length} and all\\(`));
   for (const dockerfile of dockerfiles) {
     assert.match(dockerfile, /^deploy\//, `${dockerfile} lives outside deploy/`);
     assert.ok(existsSync(dockerfile), `${dockerfile} is missing`);

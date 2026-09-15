@@ -4885,10 +4885,12 @@
           <span class="brand-mark" aria-hidden="true"></span>
           <span class="brand-name"><span data-brand-product>QM</span> <span class="brand-suffix">(admin)</span></span>
         </div>
-        <h1>Sign in through the portal</h1>
-        <p class="lead">This admin surface is reached through the portal. Sign in there to continue.</p>
+        <h1>Sign in to continue</h1>
+        <p class="lead">
+          This admin surface is reached through a sign-in service that vouches for you to it. Sign in there to continue.
+        </p>
         <div class="card">
-          <div class="body" id="principal-list"><p class="hint">Sign in through the portal to continue.</p></div>
+          <div class="body" id="principal-list"><p class="hint">Sign in to continue.</p></div>
         </div>
       </div>
     </div>
@@ -5725,10 +5727,10 @@
                   <div class="head">
                     <h2>Branding</h2>
                     <p>
-                      How this org's surfaces look. Accent is the highlight color across the web UI, admin, and portal;
-                      icon is the square image beside the name in the top left; mark is a 1–2 character badge drawn over
-                      that icon instead; label is the assistant's name everywhere it introduces itself; organization
-                      name is how the assistant refers to this org. Leave a field blank to use the deployment default.
+                      How this org's surfaces look. Accent is the highlight color across the web UI and admin; icon is
+                      the square image beside the name in the top left; mark is a 1–2 character badge drawn over that
+                      icon instead; label is the assistant's name everywhere it introduces itself; organization name is
+                      how the assistant refers to this org. Leave a field blank to use the deployment default.
                     </p>
                   </div>
                   <div class="body">
@@ -7028,7 +7030,7 @@
           $("who").classList.add("hidden");
 
           if (me.status !== 401) return showView("unavailable-view", "Admin is temporarily unavailable.");
-          return showView("signin-view", "Sign in through the portal to continue.");
+          return showView("signin-view", "Sign in to continue.");
         }
         $("org-tag").textContent = me.data.org;
         orgId = me.data.org;
@@ -14185,7 +14187,7 @@
                   ", but no invitation email was sent: " +
                   r.data.emailProblem +
                   "." +
-                  (r.data.signInUrl ? " Portal: " + r.data.signInUrl + ". A working sign-in method is required." : "")
+                  (r.data.signInUrl ? " Sign-in: " + r.data.signInUrl + ". A working sign-in method is required." : "")
                 : "Updated " + member.email + " — " + labelRole(member.role) + expires,
             r.data.emailSent || !r.data.emailProblem ? "ok" : "dirty",
             true,
@@ -14336,7 +14338,7 @@
           lists.appendChild(
             dataCard(
               "External users",
-              "Outside collaborators invited by email. They sign in at the portal with that address until it expires.",
+              "Outside collaborators invited by email. They sign in with that address until it expires.",
               external,
             ),
           );

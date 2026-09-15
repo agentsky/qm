@@ -121,7 +121,7 @@ const withSlack = !opts["no-slack"] && process.env.DEV_INSTANCE_NO_SLACK !== "1"
 const devCallerEnv = (): Record<string, string> => ({ ...callerEnvSnapshot(), DEV_INSTANCE_ORG_ID: orgId });
 
 async function legacyTeardown(lease: LeaseInfo): Promise<void> {
-  for (const name of ["portal", "admin", "web", "web-build", "slack", "core", "tunnel", "supervisor"]) {
+  for (const name of ["admin", "web", "web-build", "slack", "core", "tunnel", "supervisor"]) {
     const pid = readPidFile(lease.lockDir, `${name}.pid`);
     if (pid) await killTree(pid, 5000);
   }
@@ -218,7 +218,6 @@ async function bootOnSlot(slot: string, worktree: string, branch: string): Promi
       `port=${ports.core}`,
       `web_port=${ports.web}`,
       `admin_port=${ports.admin}`,
-      `portal_port=${ports.portal}`,
       `slack=${withSlack ? "1" : "0"}`,
       "booting=1",
       `owner_pid=${process.pid}`,
@@ -306,14 +305,13 @@ function printSuccess(result: BootResult, branch: string): void {
       : `[ok] dev instance up -- slot ${result.slot} (browser only -- Slack off)`,
   );
   out(`   branch : ${branch}`);
-  out(`   portal : http://localhost:${ports.portal}  -> prod-style front door: the assistant at / and /admin`);
   out(
     `   core   : http://localhost:${ports.core}  (org=${orgId}, session_store=${meta.session_store}, run_store=${meta.run_store})`,
   );
   if (slackLive) out(`   slack  : @${result.handle}  -> mention it in example.slack.com to test`);
-  out(`   web    : http://localhost:${ports.portal}/  (direct: http://localhost:${ports.web})`);
-  out(`   admin  : http://localhost:${ports.portal}/admin/   (direct: http://localhost:${ports.web}/admin/)`);
-  out(`   logs   : ${lock}/{core,web,portal,supervisor}.log`);
+  out(`   web    : http://localhost:${ports.web}/`);
+  out(`   admin  : http://localhost:${ports.web}/admin/`);
+  out(`   logs   : ${lock}/{core,web,supervisor}.log`);
   out(`   status : dev status   |   diagnose: dev doctor   |   apply env/code changes: dev up (reloads in place)`);
   out(`   down   : dev down   (auto-reaped if this worktree is removed)`);
 }
@@ -547,7 +545,7 @@ async function cmdStatus(): Promise<number> {
       [
         String(r.slot).padEnd(7),
         state.padEnd(18),
-        `${ports.core}/${ports.web}/${ports.admin}/${ports.portal}`.padEnd(21),
+        `${ports.core}/${ports.web}/${ports.admin}`.padEnd(21),
         age.padEnd(8),
         (r.mine ? "this" : "").padEnd(5),
         String(r.branch ?? "-").padEnd(28),

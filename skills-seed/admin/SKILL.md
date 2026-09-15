@@ -93,8 +93,8 @@ GET /v1/admin/users            → roster + admin status (org-wide)
 
 ## External users
 
-Outside collaborators, admitted by email with a role and an expiry; they sign in at the
-portal with that address until it lapses. Listed alongside the roster:
+Outside collaborators, admitted by email with a role and an expiry; they sign in with that
+address until it lapses. Listed alongside the roster:
 
 ```bash
 GET /v1/admin/users                          → externalUsers: [{email, role, expiresAt, invitedBy, status: active|expired}]

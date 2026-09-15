@@ -1,11 +1,11 @@
-{{- range $component, $host := dict "admin" "web-ui" "auth" "portal" }}
+{{- range $component, $host := dict "admin" "web-ui" }}
 {{- if and (index $.Values.services $component).enabled (not (index $.Values.services $host).enabled) }}
 {{- fail (printf "%s requires services.%s.enabled=true" $component $host) }}
 {{- end }}
 {{- end }}
 {{- $root := . -}}
 {{- range $name, $svc := .Values.services }}
-{{- if and $svc.enabled (ne $name "admin") (ne $name "auth") }}
+{{- if and $svc.enabled (ne $name "admin") }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -49,42 +49,10 @@ spec:
           {{- if ne $name "core" }}
           {{- $_ := set $wired "CORE_API_URL" (printf "http://%s:%v" (printf $svcHost "core") (index $root.Values.services "core").port) }}
           {{- end }}
-          {{- $authEnabled := (index $root.Values.services "auth").enabled }}
-          {{- $authUpstream := "http://127.0.0.1:8099" }}
-          {{- $base := trimSuffix "/" ($root.Values.publicUrl | default "") }}
-          {{- $issuer := printf "%s/idp" $base }}
-          {{- if eq $name "portal" }}
-          {{- $_ := set $wired "WEB_UI_UPSTREAM" (printf "http://%s:%v" (printf $svcHost "web-ui") (index $root.Values.services "web-ui").port) }}
-          {{- $_ := set $wired "ADMIN_UPSTREAM" (printf "http://%s:%v/admin" (printf $svcHost "web-ui") (index $root.Values.services "web-ui").port) }}
-          {{- if $authEnabled }}
-          {{- $_ := set $wired "AUTH_BROKER_UPSTREAM" $authUpstream }}
-          {{- $_ := set $wired "AUTH_EMBEDDED" "1" }}
-          {{- $_ := set $wired "AUTH_BROKER_PREFIX" "/idp" }}
-          {{- end }}
-          {{- end }}
           {{- if $root.Values.publicUrl }}
           {{- if eq $name "core" }}
           {{- $_ := set $wired "AGENT_API_URL" $root.Values.publicUrl }}
           {{- $_ := set $wired "PUBLIC_WEB_URL" $root.Values.publicUrl }}
-          {{- end }}
-          {{- if eq $name "portal" }}
-          {{- $_ := set $wired "PORTAL_PUBLIC_URL" $root.Values.publicUrl }}
-          {{- if $authEnabled }}
-          {{- $_ := set $wired "OIDC_ISSUER" $issuer }}
-          {{- $_ := set $wired "OIDC_AUTH_ENDPOINT" (printf "%s/authorize" $issuer) }}
-          {{- $_ := set $wired "OIDC_TOKEN_ENDPOINT" (printf "%s/token" $authUpstream) }}
-          {{- $_ := set $wired "OIDC_USERINFO_ENDPOINT" (printf "%s/userinfo" $authUpstream) }}
-          {{- $_ := set $wired "OIDC_JWKS_URI" (printf "%s/.well-known/jwks.json" $authUpstream) }}
-          {{- $_ := set $wired "OIDC_SCOPES" "openid email" }}
-          {{- $_ := set $wired "OIDC_PRINCIPAL_CLAIM" "email" }}
-          {{- with $root.Values.env.AUTH_ALLOWED_EMAIL_DOMAIN }}
-          {{- $_ := set $wired "OIDC_ALLOWED_EMAIL_DOMAIN" . }}
-          {{- end }}
-          {{- end }}
-          {{- end }}
-          {{- if and (eq $name "portal") $authEnabled }}
-          {{- $_ := set $wired "AUTH_ISSUER" $issuer }}
-          {{- $_ := set $wired "AUTH_REDIRECT_URI" (printf "%s/auth/callback" $base) }}
           {{- end }}
           {{- if eq $name "web-ui" }}
           {{- $_ := set $wired "WEB_UI_PUBLIC_URL" $root.Values.publicUrl }}
@@ -96,7 +64,6 @@ spec:
           {{- end }}
           {{- $componentEnv := deepCopy ($svc.env | default dict) }}
           {{- $component := "" }}
-          {{- if eq $name "portal" }}{{- $component = "auth" }}{{- end }}
           {{- if eq $name "web-ui" }}{{- $component = "admin" }}{{- end }}
           {{- if and $component (index $root.Values.services $component).enabled }}
           {{- range $k, $v := (index $root.Values.services $component).env }}

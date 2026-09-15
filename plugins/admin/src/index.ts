@@ -493,7 +493,7 @@ export function startServer(): void {
   server.listen(PORT, () => {
     console.log(`[admin-plugin] http://localhost:${PORT}  → core ${CORE} (org=${ORG})`);
     console.warn(
-      "[admin-plugin] trusting the portal-synthesized admin cookie as identity. This app MUST stay private (no public http_service); reachable only through the private portal service.",
+      "[admin-plugin] trusting the signed x-portal-identity header as identity. This app MUST stay private (no public http_service); reachable only through whatever mints that header in front of it.",
     );
   });
 }

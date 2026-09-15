@@ -63,7 +63,7 @@ jobs:
   helm-k3s-e2e:
     name: Helm k3s e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - name: Deploy the chart onto k3s
@@ -223,43 +223,3 @@ jobs:
           npm run build
       - name: Build and boot production image
         run: bash scripts/smoke-surface-image.sh web-ui
-
-  auth-plugin:
-    name: Auth plugin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: plugins/auth/package-lock.json
-      - name: Install, typecheck, test
-        working-directory: plugins/auth
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-      - name: Build and boot production image
-        run: bash scripts/smoke-surface-image.sh auth
-
-  portal-plugin:
-    name: Portal plugin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: plugins/portal/package-lock.json
-      - name: Install embedded auth dependencies
-        run: npm ci --prefix plugins/auth
-      - name: Install, typecheck, test
-        working-directory: plugins/portal
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-      - name: Build and boot production image
-        run: bash scripts/smoke-surface-image.sh portal

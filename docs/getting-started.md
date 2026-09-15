@@ -1,7 +1,7 @@
 # Deploy QM for an organization
 
 QM runs on Kubernetes. The chart in [`deploy/helm/`](../deploy/helm) deploys core and the
-surface services (web UI, admin, portal, the optional `auth` sign-in broker, and the
+surface services (the web UI, which also serves the admin surface under `/admin`, and the
 egress proxy) from one values file.
 
 ## Prerequisites
@@ -13,7 +13,7 @@ egress proxy) from one values file.
   `ghcr.io/yc-software/qm` (`image.repository` and `image.tag`), or build and push your
   own from this checkout with [`scripts/deploy-helm.sh`](../scripts/deploy-helm.sh).
 - Optional: an ingress controller and cert-manager, if you want the chart to publish the
-  portal on a hostname with TLS. Without them, reach the portal by port-forward.
+  web UI on a hostname with TLS. Without them, reach the web UI by port-forward.
 - A sandbox backend. `SANDBOX_BACKEND=local` runs agent computers as Docker containers
   next to core; the hosted backends (e2b, modal, smolmachines, agent37) need their own
   API key. See [`deploy/sandbox-base/README.md`](../deploy/sandbox-base/README.md).
@@ -62,13 +62,17 @@ service is enabled at all. Secrets are scoped per service — see
 
 ## After the first install
 
-Sign-in defaults to the built-in `auth` broker, which emails a one-time link: set
-`AUTH_EMAIL_FROM` to a verified sender and supply `RESEND_API_KEY`. Disable the `auth`
-service to use an external identity provider instead; that provider must register the
-exact `<publicUrl>/auth/callback` redirect.
+The chart exposes `web-ui` on the ingress and ships no identity provider. Both surfaces
+establish the viewer from a signed `x-portal-identity` header they verify with
+`PORTAL_IDENTITY_SECRET`, so signing anyone in requires putting something in front of
+`web-ui` that authenticates the user and mints that header. Until you do, the surfaces
+cannot sign anyone in.
+
+`AUTH_ALLOWED_EMAILS` still says who may be invited, and `AUTH_EMAIL_FROM` with
+`RESEND_API_KEY` lets admins email those invitations; neither authenticates anyone.
 
 Connector OAuth clients and the optional Slack bot token pair are entered in the admin
-surface once the portal is up. They are encrypted in durable storage and never belong in
+surface once it is reachable. They are encrypted in durable storage and never belong in
 a values file.
 
 The QM repository has no production deployment workflow: each deployment runs in the

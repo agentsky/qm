@@ -86,7 +86,6 @@ export interface Config {
   piSystemCacheSplit: boolean;
   sessionTapeMode: "shadow" | "serve";
   adminGrants?: string;
-  trustedOidcAdminIssuer?: string;
   emailAuthPrincipals?: string[];
   emailAuthDomain?: string;
   resendApiKey?: string;
@@ -405,17 +404,15 @@ function deployAppsEnv(
   env: NodeJS.ProcessEnv,
   defaultLoginUrl: string | undefined,
 ): { deployAppsSessionSecret?: string; deployAppsLoginUrl?: string } {
-  const explicit = env.DEPLOY_APPS_SESSION_SECRET;
-  const shared = env.PORTAL_SESSION_SECRET;
-  const loginUrl = env.DEPLOY_APPS_LOGIN_URL ?? (explicit || shared ? defaultLoginUrl : undefined);
-  if (loginUrl && !explicit && !shared) {
+  const secret = env.DEPLOY_APPS_SESSION_SECRET;
+  const loginUrl = env.DEPLOY_APPS_LOGIN_URL ?? (secret ? defaultLoginUrl : undefined);
+  if (loginUrl && !secret) {
     throw new Error("DEPLOY_APPS_LOGIN_URL requires DEPLOY_APPS_SESSION_SECRET");
   }
-  if (explicit && !loginUrl) {
+  if (secret && !loginUrl) {
     throw new Error("DEPLOY_APPS_SESSION_SECRET needs a sign-in address — set DEPLOY_APPS_LOGIN_URL or PUBLIC_WEB_URL");
   }
-  const secret = explicit ?? (loginUrl ? shared : undefined);
-  if (!secret || !loginUrl) return {};
+  if (!loginUrl) return {};
   return { deployAppsSessionSecret: secret, deployAppsLoginUrl: loginUrl.replace(/\/$/, "") };
 }
 
@@ -754,6 +751,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       `[config] SANDBOX_SECONDARY_BACKEND=${JSON.stringify(env.SANDBOX_SECONDARY_BACKEND.trim())} is retired and ignored — every backend whose credential is present is constructed; per-scope routes pick between them. Remove the variable.`,
     );
   }
+  const retiredHostingEnv = [
+    "SECRETS_BACKEND",
+    "SECRETS_PREFIX",
+    "FLY_APP_NAME",
+    "FLY_DEPLOY_API_TOKEN",
+    "SPRITES_TOKEN",
+    "AWS_DEPLOY_APPS_DOMAIN",
+    "AWS_DEPLOY_GATE_SECRET",
+    "AWS_SANDBOX_S3_BUCKET",
+    "ECS_TASK_PROTECTION",
+    "ECS_AGENT_URI",
+    "PORTER_DEPLOY_API_TOKEN",
+    "PORTER_DEPLOY_APPS_DOMAIN",
+    "PORTAL_SESSION_SECRET",
+  ].filter((name) => env[name]?.trim());
+  if (retiredHostingEnv.length) {
+    console.warn(
+      `[config] ${retiredHostingEnv.join(", ")} ${retiredHostingEnv.length === 1 ? "is" : "are"} retired and ignored — the Fly, AWS, Porter, and portal deployment paths were removed; deploy with the Helm chart (docs/getting-started.md). Remove the variables.`,
+    );
+  }
   const retiredBrainEnv = ["BRAIN", "BRAIN_MCP_URL", "BRAIN_RO_CLIENT_ID", "BRAIN_RW_CLIENT_ID"].filter((name) =>
     env[name]?.trim(),
   );
@@ -939,7 +956,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(modelProvider ? { modelProvider } : {}),
     providerBaseUrls,
     ...(modelGateway ? { modelGateway } : {}),
-    ...(env.TRUSTED_OIDC_ADMIN_ISSUER ? { trustedOidcAdminIssuer: env.TRUSTED_OIDC_ADMIN_ISSUER } : {}),
     ...(env.ADMIN_GRANTS ? { adminGrants: env.ADMIN_GRANTS } : {}),
     ...(env.AUTH_ALLOWED_EMAILS
       ? {

@@ -17,7 +17,7 @@ import { slotPorts, slotTokens, poolStore } from "../lib/pool.ts";
 import { assembleEnv, completeDevSecuritySecrets, currentBranch, gitHead, seedEnvFromMain } from "../lib/envctx.ts";
 import { ensureDeps } from "../lib/deps.ts";
 import { destroyLocalDevSandboxes, resolveSandbox, type SandboxResolution } from "../lib/sandbox.ts";
-import { adminGrantCount, checkPostgres, ensureLocalPostgres, firstAdminPrincipal } from "../lib/postgres.ts";
+import { adminGrantCount, checkPostgres, ensureLocalPostgres } from "../lib/postgres.ts";
 import { killTree } from "../lib/proc.ts";
 import { envFileGet } from "../lib/envctx.ts";
 import { envSha as computeEnvSha, errMessage, nowEpoch, sleep } from "../lib/util.ts";
@@ -269,7 +269,6 @@ function writeLegacyMeta(booting: boolean): void {
     port: String(ports.core),
     web_port: String(ports.web),
     admin_port: String(ports.admin),
-    portal_port: String(ports.portal),
     handle,
     supervisor_pid: String(process.pid),
     session_store: durability.sessionStore,
@@ -346,7 +345,6 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
   let sessionStore = "memory";
   let runStore = "memory";
   let localPg = false;
-  let durableAdminPrincipal = "";
   if (!databaseUrl) {
     try {
       const pg = await ensureLocalPostgres(worktree, log);
@@ -381,7 +379,6 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
         );
       }
     }
-    durableAdminPrincipal = await firstAdminPrincipal(worktree, databaseUrl).catch(() => "");
     phase("durability", "ok", `SESSION_STORE=postgres RUN_STORE=postgres (${grants} durable grant(s))`);
   } else {
     phase("durability", "ok", "memory stores");
@@ -389,13 +386,6 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
   durability = { sessionStore, runStore, databaseUrl };
 
   completeDevSecuritySecrets(assembled.env, databaseUrl || worktree);
-  const portalSessionSecret = assembled.env.PORTAL_SESSION_SECRET!;
-  let portalDevPrincipal = assembled.env.DEV_INSTANCE_ADMIN_PRINCIPAL || "";
-  if (!portalDevPrincipal && adminGrantsSeed) portalDevPrincipal = adminGrantsSeed.split(":")[0] ?? "";
-  if (!portalDevPrincipal && durableAdminPrincipal) portalDevPrincipal = durableAdminPrincipal;
-  if (!portalDevPrincipal) portalDevPrincipal = assembled.env.USER || "dev-admin";
-  log(`portal auth: localhost bypass signs in as ${portalDevPrincipal}`);
-
   const tokens = slackOn(spec) ? slotTokens(slot, store) : null;
 
   return {
@@ -410,8 +400,6 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
     databaseUrl,
     adminGrantsSeed,
     coreSigningSecret: assembled.env.CORE_SIGNING_SECRET || "",
-    portalSessionSecret,
-    portalDevPrincipal,
     sandboxEnv: sandbox.env,
   };
 }
