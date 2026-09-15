@@ -92,12 +92,12 @@ on behalf of every plugin[^chassisreads]; egress-proxy is
 `src/egress-authz-main.ts`, which the CLI's spec list does not know at
 all[^egressenv].
 
-| Deployment       | Hosts         | Secrets read                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Non-secrets currently in `secretEnv`                                                                                                                                                                                                                                                                                            |
-| ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **core**         | core, slack   | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MODEL_GATEWAY_API_KEY`, `DATABASE_URL`, `DATABASE_POOL_URL`, `PORTER_DEPLOY_API_TOKEN`, `FLY_DEPLOY_API_TOKEN`, the sandbox vendor keys, `AWS_DEPLOY_GATE_SECRET`, `DEPLOY_APPS_SESSION_SECRET`, the seven `*_OAUTH_CLIENT_SECRET` values, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`, `SECURITY_SCREEN_PROXY_TOKEN`, `RESEND_API_KEY`, and `PORTAL_SESSION_SECRET` only as the fallback for `DEPLOY_APPS_SESSION_SECRET`[^coresession] | `PUBLIC_API_URL`, `ADMIN_GRANTS`, `SANDBOX_BACKEND`, `DEPLOY_PROVIDER`, `PORTER_DEPLOY_URL`, `PORTER_DEPLOY_PROJECT_ID`, `PORTER_DEPLOY_CLUSTER_ID`, `PORTER_SANDBOX_IMAGE`, `PORTER_DEPLOY_RUNNER_IMAGE`, `DEPLOY_APPS_DOMAIN`, `PORTER_DEPLOY_APPS_DOMAIN`, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, the two CA certificates |
-| **portal**       | portal, auth  | `CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`, `PORTAL_SESSION_SECRET`, `PORTAL_TRUSTED_OIDC_CLIENT_SECRET`, `OIDC_CLIENT_SECRET` (aliased from `AUTH_CLIENT_SECRET` when the broker is embedded), `AUTH_CLIENT_SECRET`, `AUTH_TOKEN_SECRET`, `AUTH_SIGNING_JWK`, `RESEND_API_KEY`, `SMTP_PASSWORD`[^authmail]                                                                                                                                                                                                                                                                                                                              | `OIDC_CLIENT_ID` (aliased from `AUTH_CLIENT_ID`), `AUTH_CLIENT_ID`, `AUTH_ALLOWED_EMAILS` and its `OIDC_ALLOWED_EMAILS` alias, `AUTH_EMAIL_FROM`, `SMTP_HOST`, `SMTP_USERNAME`, `DEPLOY_APPS_DOMAIN`[^portaldomain]                                                                                                             |
-| **web-ui**       | web-ui, admin | `CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`[^chassisreads]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `DEPLOY_APPS_DOMAIN`, for the frame-ancestors policy[^webuidomain]                                                                                                                                                                                                                                                              |
-| **egress-proxy** | egress authz  | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`; `DATABASE_URL` only when no core relay is configured, and the chart always wires one[^egressenv]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | none                                                                                                                                                                                                                                                                                                                            |
+| Deployment       | Hosts         | Secrets read                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Non-secrets currently in `secretEnv`                                                                                                                                                                                                                                                                                            |
+| ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **core**         | core, slack   | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MODEL_GATEWAY_API_KEY`, `DATABASE_URL`, `DATABASE_POOL_URL`, `PORTER_DEPLOY_API_TOKEN`, `FLY_DEPLOY_API_TOKEN`, the sandbox vendor keys, `AWS_DEPLOY_GATE_SECRET`, `DEPLOY_APPS_SESSION_SECRET`, the seven `*_OAUTH_CLIENT_SECRET` values, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_USER_TOKEN`, `SLACK_COPILOT_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SECURITY_SCREEN_PROXY_TOKEN`, `RESEND_API_KEY`, the harness credentials `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_AUTH_CREDENTIAL`, `CODEX_ACCESS_TOKEN`, and `CODEX_AUTH_CREDENTIAL`[^harnesscreds], and `PORTAL_SESSION_SECRET` only as the fallback for `DEPLOY_APPS_SESSION_SECRET`[^coresession] | `PUBLIC_API_URL`, `ADMIN_GRANTS`, `SANDBOX_BACKEND`, `DEPLOY_PROVIDER`, `PORTER_DEPLOY_URL`, `PORTER_DEPLOY_PROJECT_ID`, `PORTER_DEPLOY_CLUSTER_ID`, `PORTER_SANDBOX_IMAGE`, `PORTER_DEPLOY_RUNNER_IMAGE`, `DEPLOY_APPS_DOMAIN`, `PORTER_DEPLOY_APPS_DOMAIN`, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, the two CA certificates |
+| **portal**       | portal, auth  | `CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`, `PORTAL_SESSION_SECRET`, `PORTAL_TRUSTED_OIDC_CLIENT_SECRET`, `OIDC_CLIENT_SECRET` (aliased from `AUTH_CLIENT_SECRET` when the broker is embedded), `AUTH_CLIENT_SECRET`, `AUTH_TOKEN_SECRET`, `AUTH_SIGNING_JWK`, `RESEND_API_KEY`, `SMTP_PASSWORD`[^authmail]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `OIDC_CLIENT_ID` (aliased from `AUTH_CLIENT_ID`), `AUTH_CLIENT_ID`, `AUTH_ALLOWED_EMAILS` and its `OIDC_ALLOWED_EMAILS` alias, `AUTH_EMAIL_FROM`, `SMTP_HOST`, `SMTP_USERNAME`, `DEPLOY_APPS_DOMAIN`[^portaldomain]                                                                                                             |
+| **web-ui**       | web-ui, admin | `CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`[^chassisreads]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `DEPLOY_APPS_DOMAIN`, for the frame-ancestors policy[^webuidomain]                                                                                                                                                                                                                                                              |
+| **egress-proxy** | egress authz  | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`; `DATABASE_URL` only when no core relay is configured, and the chart always wires one[^egressenv]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | none                                                                                                                                                                                                                                                                                                                            |
 
 Four rows deserve a note.
 
@@ -108,7 +108,12 @@ Four rows deserve a note.
   `MODAL_TOKEN_SECRET`. The defaults have to list every secret name core reads,
   not just the 29 the values file mentions, or those releases fail to upgrade.
   The list is the CLI's spec list plus core's runtime schema plus the reads
-  outside both[^coresecrets].
+  outside both[^coresecrets], and the reads outside both include the
+  alternative harness credentials: a Claude subscription token or keychain
+  credential instead of `ANTHROPIC_API_KEY`, and a ChatGPT token or keychain
+  credential instead of `OPENAI_API_KEY`[^harnesscreds]. The first draft of
+  this list missed those, which is why the render check does not trust the
+  list alone.
 - The web-ui pod today holds every one of the 29 values and needs three: the
   two shared keys the chassis reads, and the apps domain for its
   `frame-ancestors` policy. The first draft of this table said two; the domain
@@ -173,9 +178,16 @@ services:
       - NOTION_OAUTH_CLIENT_SECRET
       - GITHUB_OAUTH_CLIENT_SECRET
       - X_OAUTH_CLIENT_SECRET
-      - SLACK_BOT_TOKEN
+        - SLACK_BOT_TOKEN
       - SLACK_APP_TOKEN
+      - SLACK_USER_TOKEN
+      - SLACK_COPILOT_BOT_TOKEN
       - SLACK_SIGNING_SECRET
+      - ANTHROPIC_AUTH_TOKEN
+      - CLAUDE_CODE_OAUTH_TOKEN
+      - CLAUDE_AUTH_CREDENTIAL
+      - CODEX_ACCESS_TOKEN
+      - CODEX_AUTH_CREDENTIAL
       - SECURITY_SCREEN_PROXY_TOKEN
       - RESEND_API_KEY
       - PUBLIC_API_URL
@@ -209,8 +221,9 @@ services:
       - PORTAL_IDENTITY_SECRET
       - PORTAL_SESSION_SECRET
       - PORTAL_TRUSTED_OIDC_CLIENT_SECRET
-      - OIDC_CLIENT_ID
+        - OIDC_CLIENT_ID
       - OIDC_CLIENT_SECRET
+      - OIDC_ALLOWED_EMAILS
       - DEPLOY_APPS_DOMAIN
   admin:
     secrets: []
@@ -255,24 +268,40 @@ A named template, `qm.workloadSecret`, takes `(dict "root" $ "service"
 $name)` and renders one `Secret` named `<fullname>-<service>-env` containing
 the union of the host's list and its embedded component's list, filtered to
 non-empty values. `templates/secret.yaml` ranges over the rendered
-Deployments and includes it once each. The three aliases the current template
-renders for the embedded broker[^helmalias] move with their consumer:
-`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_ALLOWED_EMAILS` are filled
-from `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and `AUTH_ALLOWED_EMAILS` inside
-the portal Secret only, when auth is enabled and the `OIDC_*` value is unset.
-That is the same rule the CLI expresses with `envName` on the portal's
-`AUTH_CLIENT_SECRET` spec[^clialias].
+Deployments and includes it once each. The three aliases the current template renders[^helmalias] move with their
+consumer and keep their rule: `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and
+`OIDC_ALLOWED_EMAILS` are filled from `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`,
+and `AUTH_ALLOWED_EMAILS` inside the portal Secret whenever the `AUTH_*` source
+is set and the `OIDC_*` value is unset, with no dependence on
+`services.auth.enabled`. The current template has no such dependence either,
+and an earlier draft of this document added one. That would have been a
+silent behavior change: an external-OIDC deployment with the embedded broker
+disabled that sets `AUTH_ALLOWED_EMAILS` and not `OIDC_ALLOWED_EMAILS` today
+gets `OIDC_ALLOWED_EMAILS` from the alias, and the portal applies its
+allow-list only when that value is non-empty[^portalallow]. Dropping the alias
+when auth is disabled would have removed that sign-in restriction, and the
+unrouted-key check would not have noticed, because core lists
+`AUTH_ALLOWED_EMAILS` too. So the alias condition is exactly today's. An
+explicitly supplied `OIDC_*` value always wins over the alias, and
+`OIDC_ALLOWED_EMAILS` is on the portal's routing list so an operator who
+supplies it directly is routed rather than failed. The CLI expresses the same
+alias with `envName`[^clialias].
 
 `templates/deployment.yaml` attaches `<fullname>-<service>-env` by
-`secretRef`, then the service's own `envFrom`, then the shared top-level one.
-Nothing else from `secretEnv` reaches the pod.
+`secretRef`, then the workload's own `envFrom`, then its enabled embedded
+component's `envFrom` (auth into portal, admin into web-ui, the same merge the
+chart applies to `env` and this design applies to `secrets`), then the shared
+top-level list. A disabled component contributes nothing. Nothing else from
+`secretEnv` reaches the pod.
 
 The `checksum/secret-env` annotation includes `qm.workloadSecret` with the
 same `dict` and hashes that, rather than the whole `secret.yaml`
 render[^helmchecksum]. Including the file would hash every workload's Secret
-and roll every pod on any change, which is what happens today; including the
-named template for this service hashes this service's Secret only, so
-rotating the portal's cookie key rolls the portal and nothing else.
+and roll every pod on any change, which is what happens today; including the named template for this service hashes this service's Secret
+only. Rotating `AUTH_SIGNING_JWK`, which only the portal Secret carries, rolls
+the portal and nothing else; rotating `PORTAL_SESSION_SECRET` rolls the portal
+and core, because core lists it as the fallback cookie key, until the operator
+sets `DEPLOY_APPS_SESSION_SECRET` and drops the shared one from core's list.
 
 ```mermaid
 graph LR
@@ -326,12 +355,33 @@ helm lint deploy/helm
 helm template qm deploy/helm -f deploy/helm/ci/values.yaml > /tmp/render.yaml
 ```
 
-with assertions over the render: exactly one `Secret` per enabled Deployment,
-each Secret's keys equal to the table above for a values file that sets every
-routed key, the portal Secret free of the six keys above and of every
-`PORTER_*` value, every Deployment's `envFrom` carrying exactly one
-chart-rendered `secretRef` and it its own, and a values file with an unrouted
-key failing with the key's name in the message. The assertions live in a shell test next
+with assertions over the render: exactly one `Secret` per enabled
+Deployment; each Secret's keys equal to the table above for a values file that
+sets every routed key; the portal Secret free of the six keys above and of
+every `PORTER_*` value; every Deployment's `envFrom` carrying exactly one
+chart-rendered `secretRef` and it its own; and a values file with an unrouted
+key failing with the key's name in the message. Fixtures cover the alternative
+harness credential paths (`CLAUDE_CODE_OAUTH_TOKEN` and `CODEX_ACCESS_TOKEN`
+set, the API keys unset) and assert core's Secret carries them.
+
+Comparing the render to a hand-maintained table cannot catch a name missing
+from both, so a second check derives the expected set from the code: every
+`process.env` name matching `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, or
+`CREDENTIAL` read under `src/` and the plugins must appear in some routing
+list or in a short, explicit exclusion list of non-secrets that happen to
+match (`MAX_CONTEXT_TOKENS`, `EGRESS_TOKENLESS`, `SECRETS_BACKEND`,
+`SECRETS_PREFIX`, `AWS_DEPLOY_TOKEN_TTL_MIN`, `SLACK_API_URL`, and the
+runtime-minted `AGENT_CREDENTIAL_TOKEN`). A new credential read fails that
+check until someone routes it.
+
+The alias and embedded-component behavior has its own fixtures: an
+external-OIDC values file with `services.auth.enabled=false`,
+`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `AUTH_ALLOWED_EMAILS` set and
+`OIDC_ALLOWED_EMAILS` unset must render `OIDC_ALLOWED_EMAILS` into the portal
+Secret; the same file with `OIDC_ALLOWED_EMAILS` set must render that value
+instead; `services.auth.envFrom` must reach the portal Deployment and no
+other, `services.admin.envFrom` the web-ui Deployment and no other, and
+disabling the component must remove its references. The assertions live in a shell test next
 to the chart and run in the existing `Lint` job, which already checks the
 tree's formatting and is the job that touches chart files.
 
@@ -393,13 +443,14 @@ as a recommendation in the Helm section of `docs/porter.md`.
 
 ## Risks
 
-| Risk                                                                       | Mitigation                                                                                                                                                                                                   |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The table misses a read and a pod loses a key it needs                     | The render check compares each Secret's keys to the table; the probes do not catch it, so the check gates the merge; `helm rollback` restores the previous state in one command                              |
-| A release carries a key through `secretEnv` that the defaults do not route | The render fails naming the key before anything rolls; secret names the code reads are all routed by default, so this bites non-secret settings and plugin secrets, each a one-line move                     |
-| The chart's routing drifts from the CLI's spec list                        | The lists are data in one file, next to the table in this document; the later CLI emitter replaces them rather than reconciling by hand                                                                      |
-| The one-time roll interrupts in-flight agent turns                         | Core has no PodDisruptionBudget or Kubernetes task protection[^ecstaskprot]; schedule the upgrade like any other core roll                                                                                   |
-| The shared `envFrom` is used to reintroduce a map every pod receives       | It keeps that meaning on purpose and the values file says so; `services.<name>.envFrom` is the scoped form; the render check asserts each Deployment carries exactly one chart-rendered `secretRef`, its own |
+| Risk                                                                                       | Mitigation                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The table misses a read and a pod loses a key it needs                                     | The render check compares each Secret's keys to the table; the probes do not catch it, so the check gates the merge; `helm rollback` restores the previous state in one command                              |
+| A release carries a key through `secretEnv` that the defaults do not route                 | The render fails naming the key before anything rolls; secret names the code reads are all routed by default, so this bites non-secret settings and plugin secrets, each a one-line move                     |
+| The chart's routing drifts from the CLI's spec list                                        | The lists are data in one file, next to the table in this document; the later CLI emitter replaces them rather than reconciling by hand                                                                      |
+| The one-time roll interrupts in-flight agent turns                                         | Core has no PodDisruptionBudget or Kubernetes task protection[^ecstaskprot]; schedule the upgrade like any other core roll                                                                                   |
+| The alias rule drifts from today's and an external-OIDC release loses its email allow-list | The alias condition is today's, with no dependence on `services.auth.enabled`; the external-OIDC fixture asserts `OIDC_ALLOWED_EMAILS` reaches the portal Secret                                             |
+| The shared `envFrom` is used to reintroduce a map every pod receives                       | It keeps that meaning on purpose and the values file says so; `services.<name>.envFrom` is the scoped form; the render check asserts each Deployment carries exactly one chart-rendered `secretRef`, its own |
 
 ## Open questions
 
@@ -431,6 +482,10 @@ it.
 [^secretrange]: `deploy/helm/templates/secret.yaml:10` — `range $k, $v := .Values.secretEnv` renders every non-empty key, declared in `values.yaml` or not.
 
 [^coresecrets]: `src/deployment/secret-schema.ts:29` lists the names core validates at boot; `cli/src/secrets.ts:246` (`SLACK_BOT_TOKEN`) and the specs around it route the Slack values to the `slack` service, which `serviceHost` places on core; `MODEL_GATEWAY_API_KEY` (`src/config.ts:937`), `DEPLOY_APPS_SESSION_SECRET` (`:615`), `SECURITY_SCREEN_PROXY_TOKEN`, and the four undeclared `*_OAUTH_CLIENT_SECRET` names (`src/connectors/oauth.ts:46`, `clientSecretEnv`) are read by core and declared in neither list.
+
+[^harnesscreds]: `src/config.ts:215` reads `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` from the Claude harness environment and `:221` reads `CODEX_ACCESS_TOKEN` from the Codex one; `:998` reads `CODEX_AUTH_CREDENTIAL` and `:999` `CLAUDE_AUTH_CREDENTIAL`; `src/harness/claude-harness.ts:98` and `:100` pass the two Claude tokens to the child, and `src/harness/codex-harness.ts:234` passes `CODEX_ACCESS_TOKEN`. `src/slack/config.ts:65` and `:66` read `SLACK_USER_TOKEN` and `SLACK_COPILOT_BOT_TOKEN`.
+
+[^portalallow]: `plugins/portal/src/index.ts:199` builds `allowedEmails` from `OIDC_ALLOWED_EMAILS`; the restriction applies only when the list is non-empty.
 
 [^probes]: `deploy/helm/templates/deployment.yaml:129` — an HTTP probe only when the service sets `healthPath`, otherwise `tcpSocket` at `:140`; `deploy/helm/values.yaml:72` sets `healthPath` on core alone.
 
