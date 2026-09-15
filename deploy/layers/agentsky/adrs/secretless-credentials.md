@@ -2,7 +2,7 @@
 
 We run qm on Kubernetes through the Helm chart and have been trying to get the long-lived secrets out of it. We got far enough to think the change belongs upstream rather than in our layer, so here is what we found.
 
-The chart's one-Secret-to-every-pod problem is a separate proposal, one Secret per workload with a routing list per service, that we would send first; this one assumes it has landed and picks up where it stops. The values are still static, the routing lists are still maintained by hand, and the CLI still has no Kubernetes target to render them from.
+The chart's one-Secret-to-every-pod problem is a separate proposal, "One Secret per workload in the Helm chart", that we would send first; this one assumes it has landed and picks up where it stops. The values are still static, the routing lists are still maintained by hand, and the CLI still has no Kubernetes target to render them from.
 
 The deploy plane is otherwise most of the way there: the AWS deploy role is assumed through GitHub OIDC with audience and subject pinned, image pushes use the per-job token, and images are signed keylessly. The runtime plane has none of it.
 
