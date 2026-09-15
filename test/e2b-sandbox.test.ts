@@ -303,13 +303,17 @@ test("adoptHomeSnapshot promotes a staged blob to the snapshot store and resets 
   await s.writeFile(a, "old.txt", "stale sprite-era sandbox\n");
   await s.teardown(a, { keepWarm: true });
 
-  const tar = await makeTar([{ path: "migrated.txt", data: Buffer.from("came from sprites\n") }]);
+  const tar = await makeTar([{ path: "migrated.txt", data: Buffer.from("came from the old machine\n") }]);
   const { blobId } = await blobs.put(Readable.from([Buffer.from(tar)]));
   assert.ok(s.adoptHomeSnapshot);
   await s.adoptHomeSnapshot!(scope, blobId);
 
   const b = await s.provision(layers);
-  assert.equal(await s.readFile(b, "../migrated.txt"), "came from sprites\n", "hydrates from the adopted snapshot");
+  assert.equal(
+    await s.readFile(b, "../migrated.txt"),
+    "came from the old machine\n",
+    "hydrates from the adopted snapshot",
+  );
   assert.equal(await s.readFile(b, "../old.txt"), null, "the pre-adopt sandbox was discarded, not reused");
 });
 

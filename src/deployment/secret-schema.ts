@@ -22,7 +22,7 @@ interface RuntimeSecretSpec {
   requiredWhen: SecretGate | readonly SecretGate[];
 }
 
-const CORE_SECRET_SPECS: readonly RuntimeSecretSpec[] = [
+export const CORE_SECRET_SPECS: readonly RuntimeSecretSpec[] = [
   { name: "CAPABILITY_SECRET", requiredWhen: "production" },
   { name: "CONNECTOR_SECRET_KEY", requiredWhen: "production" },
   { name: "CORE_SIGNING_SECRET", requiredWhen: "production" },

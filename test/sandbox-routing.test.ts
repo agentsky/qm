@@ -136,11 +136,11 @@ test("a capability held by SOME backends stays exposed and dispatches per handle
   await routes.put("personal:s", { backend: "modal" });
   const router = createSandboxRouter({ backends: { e2b, modal }, routes, defaultBackend: "e2b" });
   assert.equal(typeof router.exportFiles, "function");
-  const onAws = await router.provision(layersFor("personal:f"));
-  assert.deepEqual(await router.exportFiles!(onAws), []);
-  const onSprites = await router.provision(layersFor("personal:s"));
+  const onE2b = await router.provision(layersFor("personal:f"));
+  assert.deepEqual(await router.exportFiles!(onE2b), []);
+  const onModal = await router.provision(layersFor("personal:s"));
   await assert.rejects(
-    async () => router.exportFiles!(onSprites),
+    async () => router.exportFiles!(onModal),
     (e: unknown) => {
       assert.ok(e instanceof CapabilityUnsupportedError);
       assert.match((e as Error).message, /does not support exportFiles/);

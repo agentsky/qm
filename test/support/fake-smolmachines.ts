@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 export interface SmolCall {
   method: string;
   path: string;
+  machine?: string | null;
   script?: string;
 }
 
@@ -163,6 +164,7 @@ export function installFakeSmolmachines(): FakeSmolmachines {
         const argv = Array.isArray(body.command) ? body.command : ["sh", "-c", body.command ?? ""];
         const script = argv[argv.length - 1] ?? "";
         calls[calls.length - 1]!.script = script;
+        calls[calls.length - 1]!.machine = m.name;
         return runExec(m, script, body.stdin);
       }
       if (sub[2] === "start") {
@@ -214,8 +216,8 @@ export function installGlobalFakeSmolmachines(): FakeSmolmachines {
   const fake = installFakeSmolmachines();
   const realFetch = globalThis.fetch;
   const patched: typeof fetch = async (input, init) => {
-    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-    if (url.origin === API_ORIGIN) return fake.fetchImpl(input, init);
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.startsWith(`${API_ORIGIN}/`)) return fake.fetchImpl(input, init);
     return realFetch(input, init);
   };
   (globalThis as { fetch: typeof fetch }).fetch = patched;

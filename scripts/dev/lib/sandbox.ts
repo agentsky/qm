@@ -22,6 +22,8 @@ async function localImagePresent(image: string): Promise<boolean> {
   return (await run("docker", ["image", "inspect", image], { timeoutMs: 30_000 })).code === 0;
 }
 
+const SANDBOX_CHOICES = ["local", "smolmachines", "e2b", "agent37"] as const;
+
 export async function resolveSandbox(opts: {
   worktree: string;
   requested: "local" | "smolmachines" | "e2b" | "agent37" | "auto";
@@ -31,8 +33,10 @@ export async function resolveSandbox(opts: {
   log: (msg: string) => void;
 }): Promise<SandboxResolution> {
   const warnings: string[] = [];
-  let backend = opts.requested;
-  if (backend === "auto") backend = "local";
+  const backend = opts.requested === "auto" ? "local" : opts.requested;
+  if (!SANDBOX_CHOICES.includes(backend)) {
+    throw new Error(`--sandbox ${String(backend)} is not one of ${SANDBOX_CHOICES.join(", ")}, or auto`);
+  }
   if (backend === "local" && !worktreeSupportsLocalSandbox(opts.worktree)) {
     throw new Error(
       "this worktree's code has no local sandbox backend (src/sandbox/local-sandbox.ts missing) -- use --sandbox e2b",

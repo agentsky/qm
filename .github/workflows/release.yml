@@ -79,7 +79,7 @@ jobs:
           done
           printf '%s\n' "$manifest" | jq . > images.json
           cat images.json
-          jq -e 'length > 0 and all(.[]; test("^ghcr\\.io/yc-software/qm/[a-z-]+@sha256:[0-9a-f]{64}$"))' images.json > /dev/null \
+          jq -e 'length == 5 and all(.[]; test("^ghcr\\.io/yc-software/qm/[a-z-]+@sha256:[0-9a-f]{64}$"))' images.json > /dev/null \
             || { echo "no usable image digests were published for $GITHUB_SHA" >&2; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" > /dev/null

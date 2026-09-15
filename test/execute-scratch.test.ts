@@ -192,7 +192,7 @@ test("a scratch turn runs on a separate volumeless box with NO capability tokens
     "the scoped box is the scope's durable machine",
   );
   assert.ok(
-    fakeSmolmachines.calls.filter((c) => c.method === "POST" && c.path === "/v1/machines").length >= 2,
+    fakeSmolmachines.calls.some((c) => c.path.endsWith("/exec") && c.machine?.startsWith("qm-scratch-")),
     "the scratch run landed on a separate throwaway machine",
   );
   assert.ok(

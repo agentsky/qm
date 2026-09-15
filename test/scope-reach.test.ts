@@ -349,7 +349,7 @@ test("DM + directory + flag: execute(scope:#room) runs on that channel's own com
   assert.equal(res.reply, "still here");
   assert.ok(
     fakeSmolmachines.calls.some(
-      (c) => c.method === "POST" && c.path.endsWith("/exec") && c.script?.includes("smoke.txt"),
+      (c) => c.method === "POST" && c.path.endsWith("/exec") && c.machine?.startsWith("qm-channel-c-ph-"),
     ),
     "the command landed on the channel's computer",
   );

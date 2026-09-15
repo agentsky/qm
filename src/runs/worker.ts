@@ -111,7 +111,6 @@ export interface WorkerDeps extends ProcessDeps {
   workerId?: string;
   sessions: SessionStore;
   canClaim?: () => boolean;
-  onClaimed?: () => void;
 }
 
 export interface Worker {
@@ -163,7 +162,6 @@ export function createWorker(deps: WorkerDeps): Worker {
       }
       inFlight =
         run.leaseToken !== null ? { runId: run.id, leaseToken: run.leaseToken, threadRef: run.sessionId } : null;
-      deps.onClaimed?.();
       try {
         await processRun(deps, run, { background: true });
       } catch (e) {
