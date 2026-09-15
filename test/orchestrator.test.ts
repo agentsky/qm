@@ -8,7 +8,7 @@ import { buildApp } from "../src/wiring.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { TEST_CAPABILITY_SECRET, testConfig } from "./support/test-config.ts";
 import { runNowSettled } from "./support/settle.ts";
-import type { Config } from "../src/config.ts";
+import { loadConfig, type Config } from "../src/config.ts";
 import type { ProvisionOptions, Sandbox } from "../src/sandbox/sandbox.ts";
 import { verifyCapabilityToken, EGRESS_PROXY_AUD } from "../src/auth/capability-token.ts";
 import { egressClaimAllowingControlPlane } from "../src/core/orchestrator.ts";
@@ -511,6 +511,46 @@ test("live bot attestation reaches control, OAuth, and egress capabilities", asy
   }
 });
 
+test("granted env credentials are announced without secrets and disappear after revocation", async () => {
+  const { app, serviceCreds, acl } = freshApp({ apiBaseUrl: "https://core.example.com" });
+  const org = scopeId("org", "default-org");
+  await serviceCreds.setServiceCredential(org, {
+    slug: "composio",
+    name: "Composio",
+    delivery: "env",
+    envKey: "COMPOSIO_API_KEY",
+    secret: "synthetic-composio-secret",
+    host: "backend.composio.dev",
+  });
+  const prompt = async (suffix: string) => {
+    const result = await app.turn(
+      dm("!sysprompt", { conversation: { kind: "dm", threadRef: `dm:U1:discovery-${suffix}` } }),
+    );
+    assert.equal(result.status, "ok");
+    assert.doesNotMatch(result.reply ?? "", /synthetic-composio-secret/);
+    return result.reply ?? "";
+  };
+  assert.doesNotMatch(await prompt("ungranted"), /COMPOSIO_API_KEY/);
+  await grantCred(acl, org, "composio");
+  const granted = await prompt("granted");
+  assert.match(granted, /## Org credentials on your computer/);
+  assert.match(granted, /`composio`.*`COMPOSIO_API_KEY`/);
+  assert.doesNotMatch(granted, /Do not suggest or offer any app connection/);
+  await acl.revoke(org, encodeRef(serviceCredRef("composio")), org, "admin@default-org");
+  assert.doesNotMatch(await prompt("revoked"), /COMPOSIO_API_KEY/);
+  await grantCred(acl, org, "composio");
+  await serviceCreds.setServiceCredential(org, {
+    slug: "composio",
+    name: "Composio",
+    delivery: "env",
+    envKey: "COMPOSIO_API_KEY",
+    secret: "synthetic-composio-secret",
+    host: "backend.composio.dev",
+    enabled: false,
+  });
+  assert.doesNotMatch(await prompt("disabled"), /COMPOSIO_API_KEY/);
+});
+
 test("org env-delivery credentials ride provision env under their envKey — read live, so a rotation applies next turn", async () => {
   const config = testConfig({
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
@@ -594,8 +634,9 @@ test("a disabled or broker-delivery credential never rides provision env", async
     return realProvision(layers, opts);
   };
 
-  const res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:env3" } }));
+  const res = await app.turn(dm("!sysprompt", { conversation: { kind: "dm", threadRef: "dm:U1:env3" } }));
   assert.equal(res.status, "ok");
+  assert.doesNotMatch(res.reply ?? "", /## Org credentials on your computer/);
   const env = captures.at(-1)?.env ?? {};
   assert.equal(env.STEEL_API_KEY, undefined, "disabled env credential stays home");
   assert.ok(
@@ -633,8 +674,9 @@ test("a credential flipped away from env between the metadata read and the secre
     return realProvision(layers, opts);
   };
 
-  const res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:env4" } }));
+  const res = await app.turn(dm("!sysprompt", { conversation: { kind: "dm", threadRef: "dm:U1:env4" } }));
   assert.equal(res.status, "ok");
+  assert.doesNotMatch(res.reply ?? "", /## Org credentials on your computer/);
   assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "a mid-flight env→broker flip never rides the env");
 });
 
@@ -663,7 +705,7 @@ test("env-delivery injection is all-internal only, and an existing env key (keyc
   };
 
   const externalRoom = await app.turn(
-    dm("!run echo keys", {
+    dm("!sysprompt", {
       conversation: {
         kind: "channel",
         threadRef: "ch:C9:t9",
@@ -674,6 +716,7 @@ test("env-delivery injection is all-internal only, and an existing env key (keyc
     }),
   );
   assert.equal(externalRoom.status, "ok");
+  assert.doesNotMatch(externalRoom.reply ?? "", /## Org credentials on your computer/);
   assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "a room with externals gets no org env credentials");
 });
 
@@ -700,13 +743,15 @@ test("env-delivery credentials are gated by service-cred grants — no grant, no
     return realProvision(layers, opts);
   };
 
-  let res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:gate1" } }));
+  let res = await app.turn(dm("!sysprompt", { conversation: { kind: "dm", threadRef: "dm:U1:gate1" } }));
   assert.equal(res.status, "ok");
+  assert.doesNotMatch(res.reply ?? "", /## Org credentials on your computer/);
   assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "ungranted env credential stays home");
 
   await grantCred(acl, org, "browse-steel", scopeId("personal", "somebody-else"));
-  res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:gate2" } }));
+  res = await app.turn(dm("!sysprompt", { conversation: { kind: "dm", threadRef: "dm:U1:gate2" } }));
   assert.equal(res.status, "ok");
+  assert.doesNotMatch(res.reply ?? "", /## Org credentials on your computer/);
   assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "a grant to someone else does not admit this actor");
 
   await grantCred(acl, org, "browse-steel", scopeId("personal", "U1"));
@@ -2698,6 +2743,7 @@ test("an enforced proxy outage fails open and audits the configured provider", a
     (entry) => entry.action === "security_screen.classify" && entry.status === "error",
   );
   assert.equal(event?.resource, "example-screen");
+  assert.equal(built.modelGateway.audit().filter((rec) => rec.model === "mock-security").length, 0);
 });
 
 test("Auto fails open on vision attachments it cannot screen, flagging them unscreened to the model", async () => {
@@ -3437,7 +3483,7 @@ test("collect-mode metrics: a turn the caller sees as 'ok' records metric status
 });
 
 test("a conversational turn never provisions a sandbox (lazy); execute/write/read do", async () => {
-  const built = freshApp();
+  const built = freshApp({ eagerProvisionEnabled: false });
   const { app } = built;
   const boxes = spyProvisioning(built.sandbox);
 
@@ -3865,3 +3911,61 @@ test("activated resource defaults preserve an existing computer and stop eager p
   assert.equal(await built.sandboxResources.resolve("personal:new-user"), null);
   assert.equal(boxes.provisioned, 1);
 });
+
+test("default screening does not invoke a model for inbound data or tool results", async () => {
+  const built = freshApp({ securityScreenBackend: loadConfig({}).securityScreenBackend });
+  let captured: ProvisionOptions | undefined;
+  const provision = built.sandbox.provision.bind(built.sandbox);
+  built.sandbox.provision = (layers, options) => {
+    captured = options;
+    return provision(layers, options);
+  };
+  const result = await built.app.turn(
+    dm("!run printf screening-default-ok", {
+      surface: "webhook",
+      triggered: true,
+      securityScreenData: "ordinary external event",
+    }),
+  );
+  assert.equal(result.status, "ok");
+  assert.match(result.reply ?? "", /screening-default-ok/);
+  assert.equal(built.screenSecurity, undefined);
+  const claims = await verifyCapabilityToken(captured!.egressToken!, TEST_CAPABILITY_SECRET);
+  assert.equal(claims?.egress?.denyPrivateNetworks, true);
+  assert.equal(built.modelGateway.audit().filter((rec) => rec.model === "mock-security").length, 0);
+});
+
+test("ordinary turns neither probe native logins nor advertise cached login state", async () => {
+  const built = freshApp();
+  const checkedAt = 1;
+  await built.livenessCache.put({ scopeId: scopeId("personal", "U1"), checkedAt, connectors: { gh: "active" } });
+  const commands: string[] = [];
+  const run = built.sandbox.run.bind(built.sandbox);
+  built.sandbox.run = async (handle, command, opts) => {
+    commands.push(command);
+    return run(handle, command, opts);
+  };
+  const prompt = await built.app.turn(dm("!sysprompt"));
+  assert.doesNotMatch(prompt.reply ?? "", /## Your logins|GitHub — ✓ signed in/);
+  await built.app.turn(dm("!run printf ready"));
+  assert.ok(commands.some((c) => c.includes("printf ready")));
+  assert.ok(commands.every((c) => !c.includes("gh auth status") && !c.includes("gcloud auth print-access-token")));
+  assert.equal((await built.livenessCache.get(scopeId("personal", "U1")))?.checkedAt, checkedAt);
+});
+
+for (const combined of [true, false]) {
+  test(`turn cleanup retains recent and malformed paths and removes stale files (combined=${combined})`, async () => {
+    const built = freshApp();
+    if (!combined) built.sandbox.removeDirAndList = undefined;
+    const handle = await built.sandbox.provision([{ scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" }]);
+    const old = `.agent-turn/owner/${(Date.now() - 48 * 3600_000).toString(36)}-nonce/file`;
+    const recent = `.agent-turn/owner/${Date.now().toString(36)}-nonce/file`;
+    const malformed = ".agent-turn/owner/!invalid/file";
+    for (const path of [old, recent, malformed]) await built.sandbox.writeFile(handle, path, "retained");
+    const result = await built.app.turn(dm("!run true"));
+    assert.equal(result.status, "ok", result.reason);
+    assert.equal(await built.sandbox.readFile(handle, old), null);
+    assert.equal(await built.sandbox.readFile(handle, recent), "retained");
+    assert.equal(await built.sandbox.readFile(handle, malformed), "retained");
+  });
+}

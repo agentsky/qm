@@ -56,13 +56,12 @@ import {
 } from "../credentials/device-flow-persist.ts";
 import type { CredentialPathSpec } from "../credentials/resident-paths.ts";
 import type { DeviceFlowCutoverMode } from "../credentials/device-flow-cutover.ts";
-import { type ResidentAuthConnector, RESIDENT_AUTH_CONNECTORS, mergeConnectors } from "../credentials/resident-auth.ts";
 import {
   configuredConnectorProviders,
   connectorStatusIsStale,
   refreshConnectorStatus,
 } from "../credentials/connector-status.ts";
-import { renderComputerBlock, renderResidentLoginsBlock, renderConnectedAppsBlock } from "./environment-facts.ts";
+import { renderComputerBlock, renderConnectedAppsBlock } from "./environment-facts.ts";
 import { PROVIDERS } from "../connectors/oauth.ts";
 import { estimateCostUsd } from "../ratelimit/budget.ts";
 import {
@@ -241,8 +240,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   }
   const leaseKeepaliveMs = Math.floor(deps.sessions.leaseTtlMs / 3);
   const skillMaterializer = createSkillMaterializer(deps.advisoryLock);
-  const residentAuthConnectors = (): ResidentAuthConnector[] =>
-    mergeConnectors(RESIDENT_AUTH_CONNECTORS, deps.deploymentLayer?.connectors ?? []);
   const pending = deps.approvals ?? createMemoryMap<PendingApprovalRecord>();
   const transcripts = createTranscriptSource(deps.sessions);
   const approvalGrants = deps.approvalGrants ?? createMemoryMap<CommandApprovalGrant>();
@@ -1058,6 +1055,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               for (const chunk of securityScreenChunks("tool_result:shared_skill", payload)) {
                 const verdict = await classifySecurityData(chunk, actor.id, scopeId, recordScreenRequest, {
                   hook: "tool_response",
+                  request: input.text,
                   surface: "shared_skill",
                   origin: input.origin.kind,
                 });
@@ -1326,6 +1324,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       }
       perf.credsMs += Date.now() - credsStart;
       let sharedCredsBlock = "";
+      const envCredLines: string[] = [];
       let egressTokenForTurn: string | undefined;
       // Service credentials: one read of the org's credential list and one grant scan feed both
       // the env-delivery gate (below) and the broker token mint (further down). Same grants gate both.
@@ -1363,8 +1362,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           )
             continue;
           const rec = await deps.serviceCreds.getServiceCredentialSecret(orgScope, cred.slug);
-          if (rec?.secret && rec.delivery === "env" && rec.enabled && rec.envKey === cred.envKey)
+          if (rec?.secret && rec.delivery === "env" && rec.enabled && rec.envKey === cred.envKey) {
             connectorEnv[cred.envKey] = rec.secret;
+            envCredLines.push(`- \`${cred.slug}\` → \`${cred.envKey}\``);
+          }
         }
         const browseSteps = deps.config?.getBrowseMaxSteps(toScopeId("org", orgId()));
         if (browseSteps && !("BROWSE_LAB_MAX_STEPS" in connectorEnv))
@@ -1509,7 +1510,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             egress: egressClaimAllowingControlPlane(
               resolution.egress,
               deps.apiBaseUrl ?? "",
-              securityPolicy.inboundScreening === "external",
+              securityPolicy.denyPrivateNetworks,
             ),
             exp: Date.now() + CAPABILITY_TTL_MS,
           },
@@ -1568,7 +1569,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         visibleSkills,
         visibleSkillsForTurn,
         skillMaterializer,
-        residentAuthConnectors,
         emitGapWork,
         perf,
       });
@@ -1745,6 +1745,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
 
         systemPrompt += sharedCredsBlock;
+        if (envCredLines.length) {
+          systemPrompt +=
+            "\n\n## Org credentials on your computer\n" +
+            "These credentials are authorized for this conversation and supplied to commands on its scoped computer, not scratch computers. " +
+            "Use the matching access skill. Never print secret values or save them in source or workspace files.\n" +
+            envCredLines.join("\n");
+        }
         if (actorIsOrgAdmin) {
           systemPrompt +=
             "\n\n## Acting for an org admin\n" +
@@ -1823,17 +1830,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(audienceMembers.some((p) => samePerson(p.id, actor.id)) ? [] : [actor]),
             ...audienceMembers,
           ].map((p) => ({ id: p.id, ...(p.displayName ? { displayName: p.displayName } : {}) }));
-          const detectedByOwner = new Map<string, string[]>();
-          if (deps.livenessCache) {
-            for (const m of members) {
-              const rec = await deps.livenessCache.get(personalScope(m.id)).catch(() => null);
-              if (!rec) continue;
-              const labels = residentAuthConnectors()
-                .filter((c) => rec.connectors[c.id] === "active")
-                .map((c) => c.label);
-              if (labels.length) detectedByOwner.set(m.id, labels);
-            }
-          }
           const [entriesByOwner, connectorsByOwner, scopeGrants, scopeAsks, ownerAsks] = await Promise.all([
             deps.keychain.listByOwners(members.map((m) => m.id)),
             deps.keychain.listConnectorsByOwners(members.map((m) => m.id)),
@@ -1850,24 +1846,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             connectorsByOwner,
             scopeGrants,
             injected: keychainInjected,
-            detectedByOwner,
             scopeAsks,
             ownerAsks,
           });
           if (keychainBlock) systemPrompt += `\n\n${keychainBlock}`;
-        }
-        if (!strictReadOnly && deps.livenessCache) {
-          const liveness = await deps.livenessCache
-            .get(memoryScopeId)
-            .catch(swallowAs("orchestrator: liveness cache read", null));
-          const loginsBlock = renderResidentLoginsBlock(liveness, residentAuthConnectors());
-          if (loginsBlock) {
-            systemPrompt += `\n\n${loginsBlock}`;
-            if (deps.scratchExec) {
-              systemPrompt +=
-                '\nThese logins live on your scoped computer — `execute` reaches them only with scope:"scoped"; a scratch run has none of them.';
-            }
-          }
         }
         if (!strictReadOnly && deps.resolveConnectorClient && conversation.kind === "dm") {
           let status = null;
@@ -2233,6 +2215,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   ? ({ content }) =>
                       classifySecurityData(content, actor.id, scopeId, undefined, {
                         hook: "tool_response",
+                        request: input.text,
                         surface: "inbound_file",
                         origin: input.origin.kind,
                       })
@@ -2723,6 +2706,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           chunks.slice(i, i + 4).map((chunk) =>
                             classifySecurityData(chunk, actor.id, scopeId, recordScreenRequest, {
                               hook: "tool_response",
+                              request: input.text,
                               surface: toolLabel,
                               origin: input.origin.kind,
                             }),

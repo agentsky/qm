@@ -76,7 +76,10 @@ test("production and unauthenticated-core escape hatch are parsed once", () => {
 
 test("harness security posture defaults to auto and validates named modes", () => {
   assert.equal(loadConfig({}).securityPosture, "auto");
-  assert.equal(loadConfig({}).securityScreenBackend, "model");
+  assert.equal(loadConfig({}).securityScreenBackend, "off");
+  assert.equal(loadConfig({ SECURITY_SCREEN_BACKEND: "model" }).securityScreenBackend, "model");
+  assert.equal(loadConfig({ SECURITY_SCREEN_BACKEND: "off" }).securityScreenBackend, "off");
+  assert.throws(() => loadConfig({ SECURITY_SCREEN_BACKEND: "typo" }), /SECURITY_SCREEN_BACKEND/);
   assert.equal(loadConfig({}).securityScreenProxy, undefined);
   assert.equal(loadConfig({}).securityScreenTimeoutMs, 15_000);
   assert.equal(loadConfig({ SECURITY_SCREEN_TIMEOUT_MS: "25" }).securityScreenTimeoutMs, 25);
@@ -210,8 +213,10 @@ test("every boolean knob accepts the shared vocabulary (off means off)", () => {
     REACH_EXEC: "off",
     COMMAND_SCOPED_CREDENTIALS: "off",
     PI_CAPTURE_REQUESTS: "off",
+    EAGER_PROVISION: "off",
   });
   assert.equal(off.seedSkills, false);
+  assert.equal(off.eagerProvisionEnabled, false);
   assert.equal(off.scratchExecEnabled, false);
   assert.equal(off.reachExecEnabled, false);
   assert.equal(off.sharedOwnerAuthIsolation, false);
@@ -233,6 +238,7 @@ test("every boolean knob accepts the shared vocabulary (off means off)", () => {
   const unset = loadConfig({});
   assert.equal(unset.piCaptureRequests, true, "capture defaults on");
   assert.equal(unset.piSystemCacheSplit, false, "cache split defaults off");
+  assert.equal(unset.eagerProvisionEnabled, true, "eager provision defaults on");
 });
 
 test("numEnv: empty and non-numeric values fall back instead of poisoning config with NaN", () => {
@@ -600,4 +606,26 @@ test("suggestion generation defaults on and can be explicitly disabled", () => {
   assert.equal(loadConfig({ SUGGESTED_ACTIVITIES_ENABLED: "true" }).suggestedActivitiesEnabled, true);
   assert.equal(loadConfig({ SUGGESTED_ACTIVITIES_ENABLED: "false" }).suggestedActivitiesEnabled, false);
   assert.throws(() => loadConfig({ SUGGESTED_ACTIVITIES_ENABLED: "maybe" }));
+});
+
+test("sandbox scope defaults parse exact scope kinds and reject malformed mappings", () => {
+  const credentials = {
+    SMOLMACHINES_TOKEN: "unit-test-smolmachines",
+    MODAL_TOKEN_ID: "unit-test-modal-id",
+    MODAL_TOKEN_SECRET: "unit-test-modal-secret",
+  };
+  assert.deepEqual(
+    loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: '{"personal":"modal","channel":"smolmachines"}' })
+      .sandboxScopeDefaults,
+    { personal: "modal", channel: "smolmachines" },
+  );
+  for (const value of [
+    "[]",
+    "null",
+    '{"personal:someone":"modal"}',
+    '{"personal":"missing"}',
+    '{"unknown":"smolmachines"}',
+    '{"personal":""}',
+  ])
+    assert.throws(() => loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: value }));
 });

@@ -287,3 +287,87 @@ test("computer status/restart on a scope routed to a backend without them is a t
     (e: unknown) => e instanceof CapabilityUnsupportedError,
   );
 });
+
+test("scope defaults select providers while explicit routes and handles retain ownership", async () => {
+  const routes = createMemoryMap<SandboxRoute>();
+  const modal = fakeBackend("modal");
+  const smolmachines = fakeBackend("smolmachines");
+  const e2b = fakeBackend("e2b");
+  const router = createSandboxRouter({
+    backends: { modal, smolmachines, e2b },
+    routes,
+    defaultBackend: "smolmachines",
+    scopeDefaults: { personal: "modal", channel: "smolmachines" },
+  });
+  await routes.put("personal:existing", { backend: "e2b" });
+  const personal = await router.provision(layersFor("personal:new"));
+  const channel = await router.provision(layersFor("channel:shared"));
+  const existing = await router.provision(layersFor("personal:existing"));
+  assert.equal(personal.backend, "modal");
+  assert.equal(channel.backend, "smolmachines");
+  assert.equal(existing.backend, "e2b");
+  assert.equal((await router.run(personal, "pwd")).stdout, "modal");
+  assert.equal((await router.profileFor!("personal:new")).backend, "modal");
+  assert.equal((await router.profileFor!("personal:existing")).backend, "e2b");
+});
+
+test("missing scope provider refuses substitution", async () => {
+  const router = createSandboxRouter({
+    backends: { smolmachines: fakeBackend("smolmachines") },
+    routes: createMemoryMap<SandboxRoute>(),
+    defaultBackend: "smolmachines",
+    scopeDefaults: { personal: "modal" },
+  });
+  await assert.rejects(router.provision(layersFor("personal:new")), /unavailable: modal/);
+});
+
+for (const combined of [true, false]) {
+  test(`cleanup and listing share one resource lock (provider combined=${combined})`, async () => {
+    const backend = fakeBackend("smolmachines");
+    let locked = false;
+    let acquisitions = 0;
+    const calls: string[] = [];
+    backend.removeDir = async (_h, path) => {
+      assert.ok(locked);
+      calls.push(`remove:${path}`);
+    };
+    backend.listDir = async (_h, path) => {
+      assert.ok(locked);
+      calls.push(`list:${path}`);
+      return ["keep/file"];
+    };
+    if (combined)
+      backend.removeDirAndList = async (_h, remove, list) => {
+        assert.ok(locked);
+        calls.push(`combined:${remove}:${list}`);
+        return ["keep/file"];
+      };
+    const resources = {
+      use: async (_id: string, action: () => Promise<unknown>) => {
+        acquisitions++;
+        locked = true;
+        try {
+          return await action();
+        } finally {
+          locked = false;
+        }
+      },
+    } as unknown as import("../src/sandbox/sandbox-resources.ts").SandboxResources;
+    const router = createSandboxRouter({
+      backends: { smolmachines: backend },
+      routes: createMemoryMap(),
+      defaultBackend: "smolmachines",
+      resources,
+    });
+    assert.deepEqual(
+      await router.removeDirAndList!(
+        { id: "box", rootDir: "/workspace", backend: "smolmachines", resourceId: "resource" },
+        "old",
+        "keep",
+      ),
+      ["keep/file"],
+    );
+    assert.equal(acquisitions, 1);
+    assert.deepEqual(calls, combined ? ["combined:old:keep"] : ["remove:old", "list:keep"]);
+  });
+}

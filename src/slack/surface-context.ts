@@ -1,3 +1,6 @@
+import type { SlackRateLimitNotice } from "./rate-limit-notice.ts";
+import { slackHistoryRateLimitMessage } from "./history-rate-limit.ts";
+import type { SlackHistoryReader } from "./history.ts";
 import { swallow, swallowAs } from "../util/errors.ts";
 import { WebClient } from "@slack/web-api";
 import {
@@ -22,6 +25,7 @@ import {
 } from "./conversation-view.ts";
 
 export function createSurfaceContextFulfiller(deps: {
+  rateLimitNotice?: SlackRateLimitNotice;
   core: SlackCoreClient;
   directory: Directory;
   serializer: ConversationSerializer;
@@ -29,6 +33,9 @@ export function createSurfaceContextFulfiller(deps: {
   trustedFileHost?: string;
   userToken?: string;
   clientOptions: Record<string, unknown>;
+  readHistory?: SlackHistoryReader;
+  historyClient?: any;
+  historyRateLimitOptions?: { managed?: boolean; setupUrl?: string };
 }): { fulfillSurfaceContext(client: any, r: SurfaceContextRequest): Promise<void> } {
   const { core, directory, serializer, botToken, trustedFileHost, userToken, clientOptions } = deps;
 
@@ -71,7 +78,8 @@ export function createSurfaceContextFulfiller(deps: {
     channel: string,
     threadTs: string | undefined,
     before: string | undefined,
-  ): Promise<{ raw: SlackHistoryMessage[]; hasMore: boolean }> {
+  ): Promise<{ raw: SlackHistoryMessage[]; hasMore: boolean; note?: string }> {
+    if (deps.readHistory) return deps.readHistory(client, channel, threadTs, before);
     const page = before ? { latest: before, inclusive: false } : {};
     if (threadTs) {
       const { messages, hasMore } = parseMessageList(
@@ -91,6 +99,7 @@ export function createSurfaceContextFulfiller(deps: {
     ts: string,
     threadTs: string | undefined,
   ): Promise<SlackHistoryMessage | undefined> {
+    client = deps.historyClient ?? client;
     if (threadTs) {
       const res = await client.conversations.replies({ channel, ts: threadTs, oldest: ts, inclusive: true, limit: 2 });
       const hit = parseMessageList(res).messages.find((m) => m?.ts === ts);
@@ -224,34 +233,60 @@ export function createSurfaceContextFulfiller(deps: {
       }
       const count = Math.max(1, Math.min(RECENT_THREAD_LIMIT, Number(q.count) || 100));
       const before = typeof q.before === "string" && q.before ? q.before : undefined;
-      const [chanPage, threadPage] = await Promise.all([
+      const outcomes = await Promise.allSettled([
         fetchContextHistory(client, channel, undefined, before),
         threadTs
           ? fetchContextHistory(client, channel, threadTs, before)
           : Promise.resolve<{ raw: SlackHistoryMessage[]; hasMore: boolean }>({ raw: [], hasMore: false }),
       ]);
       const byTs = new Map<string, SlackHistoryMessage>();
-      for (const m of [...chanPage.raw, ...threadPage.raw]) if (m?.ts) byTs.set(m.ts, m);
+      const notes = new Set<string>();
+      let hasMore = false;
+      for (const outcome of outcomes) {
+        if (outcome.status === "rejected") {
+          hasMore = true;
+          notes.add(
+            slackHistoryRateLimitMessage(outcome.reason, deps.historyRateLimitOptions) ??
+              "Some Slack context could not be read; earlier messages may be missing.",
+          );
+          continue;
+        }
+        for (const message of outcome.value.raw) if (message.ts) byTs.set(message.ts, message);
+        hasMore ||= outcome.value.hasMore;
+        if ("note" in outcome.value && outcome.value.note) notes.add(outcome.value.note);
+      }
       const raw = [...byTs.values()];
-      const hasMore = chanPage.hasMore || threadPage.hasMore;
+      const failure = outcomes.find((outcome) => outcome.status === "rejected");
+      if (!raw.length && failure?.status === "rejected") throw failure.reason;
+      const note = [...notes].join(" ");
       const nameById = new Map<string, string>();
       const shaped = await serializer.shapeRecentMessages(client, raw, "", nameById);
-      await post(
-        buildContextWindow(shaped, {
+      await post({
+        ...buildContextWindow(shaped, {
           count,
           ...(typeof q.match === "string" && q.match ? { match: q.match } : {}),
           scanHasMore: hasMore,
           nameById,
         }),
-      );
+        ...(note ? { note } : {}),
+      });
     } catch (err) {
       const code = slackErrorCode(err);
-      let msg = `Slack read failed: ${(err as Error).message}`;
+      let msg =
+        slackHistoryRateLimitMessage(err, deps.historyRateLimitOptions) ??
+        `Slack read failed: ${(err as Error).message}`;
       if (code === "not_in_channel") msg = "I'm not a member of that channel — ask someone to /invite me there";
       else if (code === "channel_not_found") msg = "I can't see that channel";
       await post({ error: msg });
     }
   }
 
-  return { fulfillSurfaceContext };
+  return {
+    fulfillSurfaceContext: (client, request) =>
+      deps.rateLimitNotice
+        ? deps.rateLimitNotice.run(client, request.query.rateLimitRecipient, () =>
+            fulfillSurfaceContext(client, request),
+          )
+        : fulfillSurfaceContext(client, request),
+  };
 }

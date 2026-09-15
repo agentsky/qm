@@ -143,6 +143,7 @@ async function proxyAdminDeployment(ctx: BaseCtx): Promise<void> {
 }
 
 const GATEWAY_AUTH_HEADERS = [
+  "x-qm-app-host",
   "x-signature",
   "x-timestamp",
   "x-as-principal",
@@ -533,15 +534,24 @@ async function proxyReach(
     return;
   }
   const htmlNav = wantsWarmingPage(req, method);
-  const up = requestFn({ hostname: host, port, path: subPath + url.search, method, headers }, (upRes) => {
-    up.setTimeout(0);
-    markUpstreamUp(upstreamKey);
-    upRes.on("error", () => res.destroy());
-    armThrottleShield(upstreamKey, upRes.statusCode ?? 0, upRes);
-    const headers = gatewaySafeResponseHeaders(upRes.headers, opts?.sandbox ?? false);
-    res.writeHead(upRes.statusCode ?? 502, headers);
-    upRes.pipe(res);
-  });
+  const up = requestFn(
+    {
+      hostname: host,
+      port,
+      path: subPath + url.search,
+      method,
+      headers,
+    },
+    (upRes) => {
+      up.setTimeout(0);
+      markUpstreamUp(upstreamKey);
+      upRes.on("error", () => res.destroy());
+      armThrottleShield(upstreamKey, upRes.statusCode ?? 0, upRes);
+      const headers = gatewaySafeResponseHeaders(upRes.headers, opts?.sandbox ?? false);
+      res.writeHead(upRes.statusCode ?? 502, headers);
+      upRes.pipe(res);
+    },
+  );
   const dialMs = warmingDialTimeoutMs(
     upstreamKey,
     htmlNav,
@@ -618,7 +628,13 @@ function deploymentFetchHttp1(
     const { host, port, tls, proxyHeaders } = endpoint.endpoint;
     const requestFn = tls ? httpsRequest : httpRequest;
     const request = requestFn(
-      { hostname: host, port, path, method: "GET", headers: { ...proxyHeaders, "accept-encoding": "identity" } },
+      {
+        hostname: host,
+        port,
+        path,
+        method: "GET",
+        headers: { ...proxyHeaders, "accept-encoding": "identity" },
+      },
       async (response) => {
         clearTimeout(timeout);
         try {
@@ -743,14 +759,31 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   const { req, res, app, deps, url, pathname } = ctx;
   const appsDomain = deps.deployAppsDomain;
   const gateSecret = deps.deployGateSecret;
-  if (!appsDomain || !gateSecret) return false;
+  const fromAppHost = req.headers["x-qm-app-host"] === "1";
+  if (!appsDomain || !gateSecret) {
+    if (!fromAppHost) return false;
+    sendJson(res, 503, { error: "unavailable", message: "app gateway is not configured" });
+    return true;
+  }
   const rawHost = (req.headers.host ?? "").split(":")[0]!.toLowerCase();
   const suffix = `.${appsDomain.toLowerCase()}`;
-  if (!rawHost || !rawHost.endsWith(suffix)) return false;
-  const slug = rawHost.slice(0, -suffix.length);
-  if (!slug || slug.includes(".")) {
+  if (!rawHost || !rawHost.endsWith(suffix)) {
+    if (!fromAppHost) return false;
     sendJson(res, 404, { error: "not_found" });
     return true;
+  }
+  const slug = rawHost.slice(0, -suffix.length);
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
+    sendJson(res, 404, { error: "not_found" });
+    return true;
+  }
+  if (!["GET", "HEAD", "OPTIONS"].includes(ctx.method)) {
+    const origin = req.headers.origin;
+    const site = req.headers["sec-fetch-site"];
+    if ((origin !== undefined && origin !== `https://${rawHost}`) || (site !== undefined && site !== "same-origin")) {
+      sendJson(res, 403, { error: "forbidden", message: "cross-origin app request refused" });
+      return true;
+    }
   }
   const safePathname =
     pathname.startsWith("/") && !pathname.startsWith("//") && !/[\\\x00-\x1f]/.test(pathname) ? pathname : "/";

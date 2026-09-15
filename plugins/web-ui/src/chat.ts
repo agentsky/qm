@@ -129,6 +129,7 @@ import {
   clearWorking,
   conversationBackground,
   isAbandonedNewChat,
+  shouldStartProactiveOpener,
   markWorking,
   watchActivityLabel,
 } from "./session-list";
@@ -511,10 +512,17 @@ export function createChatSurface(
     scopeId: string | null,
     messages: ReturnType<typeof entriesToMessages>,
   ): boolean {
-    if (appState.me?.suggestedActivitiesGeneration || appState.me?.suggestedActivities?.length) return false;
-    if (proactiveOpenerStarted || sessionId !== null || scopeId !== null || messages.length > 0) return false;
-    if (!sessionsState.loaded) return false;
-    if (sessionsState.list.some((s) => s.id)) return false;
+    if (
+      !shouldStartProactiveOpener({
+        started: proactiveOpenerStarted,
+        sessionId,
+        scopeId,
+        messageCount: messages.length,
+        loaded: sessionsState.loaded,
+        sessions: sessionsState.list,
+      })
+    )
+      return false;
     proactiveOpenerStarted = true;
     agent.state.messages = [{ role: "user", content: "", opener: true } as unknown as AgentMessage];
     agent.streamFn = makeOpenerStreamFn(threadRef, agent, currentTurnOptions, onWork, runSlot);
@@ -1686,10 +1694,11 @@ export function createChatSurface(
   }
 
   function connectorWidget(link: ConnectorLink): TemplateResult {
+    const composio = link.provider === "composio";
     const name =
-      CONNECTOR_NAMES[link.provider] ??
+      (composio ? "your account" : CONNECTOR_NAMES[link.provider]) ??
       (link.provider ? link.provider[0]!.toUpperCase() + link.provider.slice(1) : "your account");
-    if (link.provider && connectedConnectors.has(link.provider)) {
+    if (!composio && link.provider && connectedConnectors.has(link.provider)) {
       return html`<div class="connector-widget connected" role="status">
         <span class="connector-widget-icon">${icon(Check, 18)}</span>
         <span class="connector-widget-text"
@@ -1697,10 +1706,16 @@ export function createChatSurface(
         >
       </div>`;
     }
-    return html`<a class="connector-widget" href=${withReturnTo(link.url)} target="_blank" rel="noreferrer">
+    return html`<a
+      class="connector-widget"
+      href=${composio ? link.url : withReturnTo(link.url)}
+      target="_blank"
+      rel="noreferrer"
+    >
       <span class="connector-widget-icon">${icon(Plug, 18)}</span>
       <span class="connector-widget-text"
-        ><strong>Connect ${name}</strong><small>Authorize access in a new tab</small></span
+        ><strong>${(composio && link.label) || `Connect ${name}`}</strong
+        ><small>${composio ? "Authorize access via Composio" : "Authorize access in a new tab"}</small></span
       >
       ${icon(ChevronRight, 16)}
     </a>`;
@@ -1757,7 +1772,7 @@ export function createChatSurface(
       if (chunk.type === "text") {
         const shown = assistantDisplayText(chunk.text);
         const links = shown.trim() ? connectorLinksIn(shown, location.origin) : [];
-        const body = links.length ? stripConnectorLinks(shown) : shown;
+        const body = links.length ? stripConnectorLinks(shown, links) : shown;
         if (body.trim())
           parts.push(
             html`<div class="streaming-text ${isStreaming ? "live-stream" : ""}" dir="auto">${markdown(body)}</div>`,

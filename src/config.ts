@@ -1,3 +1,5 @@
+import { parseScopeId } from "./types.ts";
+import type { SandboxScopeDefaults } from "./sandbox/sandbox-routing.ts";
 import { existsSync, readdirSync } from "node:fs";
 import {
   parseProviderBaseUrl,
@@ -21,7 +23,12 @@ import type { SandboxBackendName } from "./sandbox/sandbox-routing.ts";
 import { DEFAULT_CAPTURE_QUIET_MS } from "./memory/strategies/per-turn.ts";
 import { parseSecurityPosture, type SecurityPosture } from "./security/security-posture.ts";
 import { parseSharingPosture, type SharingPosture } from "./resolution/sharing-posture.ts";
-import { slackPluginConfigFromEnv, type SlackPluginConfig } from "./slack/config.ts";
+import {
+  parseSlackContextSource,
+  type SlackContextSource,
+  slackPluginConfigFromEnv,
+  type SlackPluginConfig,
+} from "./slack/config.ts";
 import { codexAuthFileForEnv, readCodexOAuthAuthFile } from "./harness/codex-auth-file.ts";
 import {
   MODEL_PROVIDERS,
@@ -35,6 +42,7 @@ import {
 import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-settings.ts";
 
 export interface Config {
+  slackContextSource?: SlackContextSource;
   suggestedActivitiesEnabled?: boolean;
   suggestedActivitiesContext?: string;
   swarmDefaults?: SwarmSettings;
@@ -55,6 +63,7 @@ export interface Config {
   securityPosture: SecurityPosture;
   sandboxResourcesEnabled: boolean;
   sharingPosture: SharingPosture;
+  sandboxScopeDefaults?: SandboxScopeDefaults;
   sandboxBackend: SandboxBackendName;
   sandboxSecondaryBackend?: SandboxBackendName;
   deployProvider: "docker";
@@ -156,7 +165,7 @@ export interface Config {
   approvalSummaryTimeoutMs: number;
   turnLeaseWaitMs: number;
   securityScreenTimeoutMs: number;
-  securityScreenBackend: "model" | "proxy";
+  securityScreenBackend: "off" | "model" | "proxy";
   securityScreenProxy?: {
     provider: string;
     endpoint: string;
@@ -611,11 +620,11 @@ function sharingPostureEnvStrict(value: string | undefined): SharingPosture {
 }
 
 function securityScreenBackendEnvStrict(value: string | undefined): Config["securityScreenBackend"] {
-  if (value === undefined || value.trim() === "") return "model";
+  if (value === undefined || value.trim() === "") return "off";
   const backend = value.trim().toLowerCase();
-  if (backend === "model" || backend === "proxy") return backend;
+  if (backend === "off" || backend === "model" || backend === "proxy") return backend;
   throw new Error(
-    `SECURITY_SCREEN_BACKEND=${JSON.stringify(value)} is not recognized — use model or proxy, or unset it.`,
+    `SECURITY_SCREEN_BACKEND=${JSON.stringify(value)} is not recognized — use off, model, or proxy, or unset it.`,
   );
 }
 
@@ -746,6 +755,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
   const sandboxBackend = sandboxBackendEnvStrict(env.SANDBOX_BACKEND);
+  const sandboxScopeDefaults: SandboxScopeDefaults = {};
+  if (env.SANDBOX_SCOPE_BACKENDS) {
+    const values: unknown = JSON.parse(env.SANDBOX_SCOPE_BACKENDS);
+    if (!values || typeof values !== "object" || Array.isArray(values))
+      throw new Error("SANDBOX_SCOPE_BACKENDS must be an object of scope kinds and backend names");
+    for (const [kind, value] of Object.entries(values)) {
+      const parsed = parseScopeId(kind + ":scope").kind;
+      if (!parsed || parsed !== kind || typeof value !== "string" || !value.trim())
+        throw new Error("Invalid SANDBOX_SCOPE_BACKENDS entry: " + kind);
+      sandboxScopeDefaults[parsed] = sandboxBackendEnvStrict(value, "SANDBOX_SCOPE_BACKENDS." + kind);
+    }
+  }
+
   if (env.SANDBOX_SECONDARY_BACKEND?.trim()) {
     console.warn(
       `[config] SANDBOX_SECONDARY_BACKEND=${JSON.stringify(env.SANDBOX_SECONDARY_BACKEND.trim())} is retired and ignored — every backend whose credential is present is constructed; per-scope routes pick between them. Remove the variable.`,
@@ -790,7 +812,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "SECURITY_SCREEN_BACKEND=proxy requires SECURITY_SCREEN_PROXY_PROVIDER, SECURITY_SCREEN_PROXY_ENDPOINT, SECURITY_SCREEN_PROXY_TOKEN, and SECURITY_SCREEN_PROXY_ROLLOUT",
     );
   }
-  if (securityScreenBackend === "model" && hasProxyConfig) {
+  if (securityScreenBackend !== "proxy" && hasProxyConfig) {
     throw new Error("SECURITY_SCREEN_PROXY_* requires SECURITY_SCREEN_BACKEND=proxy");
   }
   if (proxyProvider && (proxyProvider.length > 63 || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(proxyProvider))) {
@@ -926,6 +948,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         }
       : {}),
     sandboxBackend,
+    sandboxScopeDefaults,
     sandboxResourcesEnabled: boolEnvStrict("SANDBOX_RESOURCES_ENABLED", env.SANDBOX_RESOURCES_ENABLED) ?? false,
     deployProvider,
     ...(env.EGRESS_SERVICE_HOSTS
@@ -1026,6 +1049,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(publicUrl ? { publicUrl } : {}),
     ...(env.PUBLIC_WEB_URL ? { publicWebUrl: env.PUBLIC_WEB_URL } : {}),
     ...(slack ? { slack } : {}),
+    slackContextSource: parseSlackContextSource(env.SLACK_CONTEXT_SOURCE),
     runStore,
     ...(env.SKILL_SIGNING_SECRET ? { skillSigningSecret: env.SKILL_SIGNING_SECRET } : {}),
     seedSkills: boolEnvStrict("SEED_SKILLS", env.SEED_SKILLS) ?? true,
@@ -1083,7 +1107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     reachExecEnabled: boolEnvStrict("REACH_EXEC", env.REACH_EXEC) ?? false,
     sharedOwnerAuthIsolation: boolEnvStrict("SHARED_OWNER_AUTH_ISOLATION", env.SHARED_OWNER_AUTH_ISOLATION) ?? false,
     surfaceDebugFooter: boolEnvStrict("SURFACE_DEBUG_FOOTER", env.SURFACE_DEBUG_FOOTER) ?? false,
-    eagerProvisionEnabled: boolEnvStrict("EAGER_PROVISION", env.EAGER_PROVISION) ?? false,
+    eagerProvisionEnabled: boolEnvStrict("EAGER_PROVISION", env.EAGER_PROVISION) ?? true,
     localSandbox: localSandboxEnv(env),
     smolmachinesSandbox: smolmachinesSandboxEnv(env),
     agent37Sandbox: agent37SandboxEnv(env),

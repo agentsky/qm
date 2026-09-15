@@ -101,9 +101,9 @@ can only tighten:
 
 - **Strict** — every harness tool call pauses for human approval, except the two
   no-effect turn enders.
-- **Auto** (default) — a classifier screens provenance-labelled external data and tool
-  results before they reach the model; a deployment can point that at its own screening
-  proxy.
+- **Auto** (default) — blocks private-network access and uses a content screener when
+  the deployment configures one. Model screening is off by default; deployments can
+  use an external proxy or explicitly opt into the built-in model classifier.
 - **Dangerous** — no content screening, no pauses between tool calls.
 
 The predeclared command policy — approval rules and hard denials for things like
@@ -244,3 +244,44 @@ it prepares a clean upstream branch without private deployment data or history.
 ## License
 
 Except where otherwise noted, QM is available under the [MIT License](./LICENSE).
+
+### Managed Slack installation
+
+A hosting provider can set `QM_SLACK_SERVICE_URL` (HTTPS),
+`QM_SLACK_SERVICE_TOKEN` (unique per deployment), and `QM_SLACK_APP_ID` on core.
+Set `QM_SLACK_SERVICE_URL` on the admin/web service as well so its browser policy allows the installation form.
+The admin Slack card then offers **Add to Slack** through that service. Core calls
+`POST /install/start` with the deployment bearer credential and expects `{ "url":
+"https://<service>/..." }`. The browser submits a POST form to that URL; the service must validate its Origin against the company URL. The service owns browser-bound OAuth state, Slack
+signature verification, workspace ownership, and app credentials.
+
+Whatever fronts core must expose `POST /v1/slack/managed/installation`, `DELETE` on
+that same path, and `POST /v1/slack/managed/events` without a browser session. Core
+requires the deployment bearer credential on each request. Installation takes
+`botToken`, `appId`, `teamId`, `installId`, `installedAt` (epoch milliseconds), and
+optional `teamName`. Repeat the same installation request until it returns 200
+with `ready: true`; 202 means the encrypted token is saved but the runtime has
+not started. Older installation generations and conflicting workspaces fail
+closed. Deletion takes `installId` and only disables that generation.
+
+Delivery takes `{ installId, body, retryNum?, retryReason? }`, where `body` is the
+verified Slack event or decoded interaction payload. Core checks its workspace
+and app before passing it to the existing Slack runtime and acknowledgment
+machinery. There is no shared queue: unavailable core instances return failures,
+and the hosting service must relay those failures to Slack. The service must
+process lifecycle events and ignore revocations older than the installation.
+
+Managed deployments also support an administrator-provided Slack app through the same
+Slack settings card. Saving its validated bot and Socket Mode tokens replaces the
+managed runtime and rejects subsequent managed installation callbacks. To return to
+the managed app, disconnect the administrator-provided app in QM, then explicitly
+choose **Add to Slack**. Disconnecting alone does not permit old managed callbacks to
+restore an installation.
+
+Use the same Slack workspace when replacing the managed app, so existing conversations
+and memberships remain associated with that workspace. Invite the new bot to the
+channels it should serve; Slack does not transfer the old bot's memberships. Once
+replacement is verified, remove the old managed app from Slack to avoid two visible
+QM identities. QM rejects deliveries for the old installation as soon as the new
+credentials are saved. The replacement uses Socket Mode even if the deployment's
+environment previously selected HTTP events.

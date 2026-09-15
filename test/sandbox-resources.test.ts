@@ -818,3 +818,19 @@ test("failed background registration kills its process and releases the resource
   await resources.retire("alice", record.id);
   assert.equal((await resources.get(record.id)).cleanupPending, false);
 });
+
+test("resource activation honors scope defaults and preserves explicit legacy provider routes", async () => {
+  const { options, routes, backend } = fixture(undefined, ["personal:alice", "channel:room", "personal:existing"]);
+  await routes.put("personal:existing", { backend: "e2b" });
+  const resources = createSandboxResources({
+    ...options,
+    backends: { modal: backend, smolmachines: backend, e2b: backend },
+    defaultBackend: "smolmachines",
+    scopeDefaults: { personal: "modal", channel: "smolmachines" },
+  });
+  assert.equal((await resources.resolve("personal:alice"))?.backend, "modal");
+  assert.equal((await resources.resolve("channel:room"))?.backend, "smolmachines");
+  assert.equal((await resources.resolve("personal:existing"))?.backend, "e2b");
+  assert.equal(resources.defaultBackend("personal:new"), "modal");
+  assert.equal(resources.defaultBackend("channel:new"), "smolmachines");
+});

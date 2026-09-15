@@ -2686,7 +2686,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             "What to do: post (reply HERE, in this conversation — the normal way to answer), reach " +
             "(send to a DIFFERENT audience: a teammate DM, another channel, a group — the ONLY way to " +
             "leave this conversation), react (emoji on a message), edit/delete (revise/retract your " +
-            "OWN message), read_thread (pull this thread's live messages), whats_new (pointers to what " +
+            "OWN message), read_thread (read stored thread messages, with live fallback for missing context), whats_new (pointers to what " +
             "changed), search (find messages), read_members (the roster), read_file (a shared file's " +
             "contents by reference).",
         },
@@ -2928,8 +2928,18 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           const messages = r.messages ?? [];
           return recordExternalResult(
             callId,
-            { tool: surfaceName, action: "read_thread", ok: true, count: messages.length },
-            text(messages.length ? JSON.stringify(messages, null, 2) : "[no messages in this thread]"),
+            {
+              tool: surfaceName,
+              action: "read_thread",
+              ok: true,
+              count: messages.length,
+              ...(r.message ? { note: r.message } : {}),
+            },
+            text(
+              [messages.length ? JSON.stringify(messages, null, 2) : "[no messages in this thread]", r.message]
+                .filter(Boolean)
+                .join("\n"),
+            ),
             "surface thread",
           );
         }
@@ -2963,9 +2973,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               ok: true,
               hereNew: here,
               activeSubConversations: others,
+              ...(r.message ? { note: r.message } : {}),
               ...(r.latest ? { latest: r.latest } : {}),
             },
-            text(line),
+            text([line, r.message].filter(Boolean).join("\n")),
           );
         }
         case "search": {
@@ -3011,9 +3022,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               action: "search",
               ok: true,
               count: hits.length,
+              ...(r.message ? { note: r.message } : {}),
               ...(r.source ? { source: r.source } : {}),
             },
-            text(body),
+            text([body, r.message].filter(Boolean).join("\n")),
             "surface search",
           );
         }

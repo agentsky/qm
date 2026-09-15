@@ -409,3 +409,23 @@ test("activation cannot pass a running migration before its final route and tear
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("migration reads the scope default as its source before installing an explicit route", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mig-scope-default-"));
+  try {
+    const { e2b, modal, routes } = build(root);
+    writeFileSync(join(root, "e2b-home", "notes.txt"), "scope default data\n");
+    const runner = createSandboxMigrationRunner({
+      backends: { e2b, modal },
+      routes,
+      defaultBackend: "modal",
+      scopeDefaults: { personal: "e2b" },
+    });
+    const result = await runner.migrateScope("personal:alice", "modal", "scope policy migration");
+    assert.equal(result.from, "e2b");
+    assert.equal(readFileSync(join(root, "modal-home", "notes.txt"), "utf8"), "scope default data\n");
+    assert.equal((await routes.get("personal:alice"))?.backend, "modal");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
