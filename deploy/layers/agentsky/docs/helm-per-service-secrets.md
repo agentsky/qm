@@ -247,8 +247,21 @@ a list wholesale on override, which is the right semantics for a routing
 table: an operator who overrides `services.portal.secrets` states the whole
 set.
 
-A name in `secretEnv` with a non-empty value that no enabled service lists is
-a render failure naming the key. That catches the habit this change is
+A name in `secretEnv` with a non-empty value that no enabled workload
+_consumes_ is a render failure naming the key. Consumed means one of two
+things: an enabled workload lists the name, or an enabled workload emits an
+alias whose source the name is. The renderer builds each workload's output
+map and records which inputs it read while doing so, then checks every
+non-empty input against that set. The distinction matters for the aliases:
+with the embedded broker disabled, `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET`
+are listed only by the disabled `auth` service, yet an external-OIDC release
+that supplies them as its only client credentials gets `OIDC_CLIENT_ID` and
+`OIDC_CLIENT_SECRET` from the aliases today and must keep doing so. A rule
+that looked only at enabled lists would fail that upgrade. Under the
+consumed-input rule the portal reads both sources while emitting the aliases,
+so they count; an `AUTH_*` value shadowed by an explicit `OIDC_*` value is not
+read by the alias and, if no enabled service lists it, fails as unused, which
+is the right answer for a leftover. That catches the habit this change is
 removing: adding a key to `secretEnv` and expecting it to appear everywhere.
 It also means an operator who has been carrying a non-secret setting or a
 plugin's secret through `secretEnv` sees each such key named at `helm upgrade`
@@ -386,10 +399,14 @@ fails that check until someone routes it.
 
 The alias and embedded-component behavior has its own fixtures: an
 external-OIDC values file with `services.auth.enabled=false`,
-`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `AUTH_ALLOWED_EMAILS` set and
-`OIDC_ALLOWED_EMAILS` unset must render `OIDC_ALLOWED_EMAILS` into the portal
-Secret; the same file with `OIDC_ALLOWED_EMAILS` set must render that value
-instead; `services.auth.envFrom` must reach the portal Deployment and no
+`AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and `AUTH_ALLOWED_EMAILS` set as the
+only client-credential inputs, and every `OIDC_*` value unset, must render
+all three aliases into the portal Secret and must not fail on the two
+`AUTH_CLIENT_*` inputs; the same file with `OIDC_ALLOWED_EMAILS` set must
+render that value instead; the same file with `OIDC_CLIENT_SECRET` also set
+must render the explicit value and fail on the now-unused
+`AUTH_CLIENT_SECRET`; and an unrelated unused key in any of these files must
+still fail; `services.auth.envFrom` must reach the portal Deployment and no
 other, `services.admin.envFrom` the web-ui Deployment and no other, and
 disabling the component must remove its references. The assertions live in a shell test next
 to the chart and run in the existing `Lint` job, which already checks the
@@ -453,14 +470,14 @@ as a recommendation in the Helm section of `docs/porter.md`.
 
 ## Risks
 
-| Risk                                                                                       | Mitigation                                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The table misses a read and a pod loses a key it needs                                     | The render check compares each Secret's keys to the table; the probes do not catch it, so the check gates the merge; `helm rollback` restores the previous state in one command                              |
-| A release carries a key through `secretEnv` that the defaults do not route                 | The render fails naming the key before anything rolls; secret names the code reads are all routed by default, so this bites non-secret settings and plugin secrets, each a one-line move                     |
-| The chart's routing drifts from the CLI's spec list                                        | The lists are data in one file, next to the table in this document; the later CLI emitter replaces them rather than reconciling by hand                                                                      |
-| The one-time roll interrupts in-flight agent turns                                         | Core has no PodDisruptionBudget or Kubernetes task protection[^ecstaskprot]; schedule the upgrade like any other core roll                                                                                   |
-| The alias rule drifts from today's and an external-OIDC release loses its email allow-list | The alias condition is today's, with no dependence on `services.auth.enabled`; the external-OIDC fixture asserts `OIDC_ALLOWED_EMAILS` reaches the portal Secret                                             |
-| The shared `envFrom` is used to reintroduce a map every pod receives                       | It keeps that meaning on purpose and the values file says so; `services.<name>.envFrom` is the scoped form; the render check asserts each Deployment carries exactly one chart-rendered `secretRef`, its own |
+| Risk                                                                                       | Mitigation                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The table misses a read and a pod loses a key it needs                                     | The render check compares each Secret's keys to the table; the probes do not catch it, so the check gates the merge; `helm rollback` restores the previous state in one command                                                                    |
+| A release carries a key through `secretEnv` that the defaults do not route                 | The render fails naming the key before anything rolls; secret names the code reads are all routed by default, so this bites non-secret settings and plugin secrets, each a one-line move                                                           |
+| The chart's routing drifts from the CLI's spec list                                        | The lists are data in one file, next to the table in this document; the later CLI emitter replaces them rather than reconciling by hand                                                                                                            |
+| The one-time roll interrupts in-flight agent turns                                         | Core has no PodDisruptionBudget or Kubernetes task protection[^ecstaskprot]; schedule the upgrade like any other core roll                                                                                                                         |
+| The alias rule drifts from today's and an external-OIDC release loses its email allow-list | The alias condition is today's, with no dependence on `services.auth.enabled`, and the unused-input check counts an alias source as consumed; the external-OIDC fixtures assert all three aliases reach the portal Secret with the broker disabled |
+| The shared `envFrom` is used to reintroduce a map every pod receives                       | It keeps that meaning on purpose and the values file says so; `services.<name>.envFrom` is the scoped form; the render check asserts each Deployment carries exactly one chart-rendered `secretRef`, its own                                       |
 
 ## Open questions
 
