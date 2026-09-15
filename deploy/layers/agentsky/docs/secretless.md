@@ -255,7 +255,7 @@ Tiers are defined in the next section.
 | `SMTP_PASSWORD`                                                                                                  | portal                                                                                                                             | on SES, derived from an IAM access key with a published rotation (Tier 2); on any other relay, dashboard-minted (Tier 3) | 2 / 3 |
 | `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                                                    | core                                                                                                                               | ESO-carried; human-rotated at the IdP, propagates restart-free; PKCE public client removes it where the IdP permits      | 2     |
 | `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` | core                                                                                                                               | same as above, and undeclared by the CLI                                                                                 | 2     |
-| `OIDC_CLIENT_SECRET` (external IdP)                                                                              | portal                                                                                                                             | ESO-carried; `private_key_jwt` removes it where the IdP supports it                                                      | 2     |
+| `OIDC_CLIENT_SECRET` (external IdP)                                                                              | portal                                                                                                                             | ESO-carried, restart-required until A1 reaches the portal; `private_key_jwt` removes it where the IdP supports it        | 2     |
 
 The "where it lives" column is the Helm chart after the per-workload
 split[^split]. Under Porter the operator passes each value by hand with
@@ -508,14 +508,51 @@ is calling, the user claims are a payload that SA asserts, and the authorization
 question becomes "may this SA assert user identities?" — a per-surface
 permission, not a second key. On ECS the same holds under KMS: the portal holds
 `kms:Sign` on its key, core holds the public half. Under no scheme does core
-need a signing key for this. The trusted-entry admin assertion collapses the
-same way: once core knows the calling ServiceAccount is the portal, the claim
-that a trusted sign-in just succeeded is a payload that account asserts, and
-its single-use `jti` moves from the durable replay store to the same TokenReview
-budget. The portal already verifies OIDC id_tokens against a JWKS for both of
+need a signing key for this. The trusted-entry admin assertion loses its HMAC the same way and keeps
+everything else. Once core knows the calling ServiceAccount is the portal,
+the claim that a trusted sign-in just succeeded needs no signature of its
+own; it still needs its purpose binding, its 60-second expiry, and its
+single-use `jti` claimed in the durable replay store before the grant is
+provisioned, exactly as the handler does today[^trustedadmin]. `TokenReview`
+authenticates the workload token; it does not consume a privileged operation
+and it does not remember that one already ran. The same ServiceAccount token
+serves any number of distinct operations, and the same operation must not
+become reusable across replicas or restarts, so operation-level freshness and
+deduplication stay where they are, independent of how the caller
+authenticated. The portal already verifies OIDC id_tokens against a JWKS for both of
 its sign-in routes[^portaljwks]; core's B1 verifier for the cluster, STS, and
 Fly issuers is that operation with a different issuer, and the chassis is the
 sanctioned place to share it.
+
+**Delegation through intermediaries is a separate decision, and this is
+it.** "The calling ServiceAccount asserts the user" covers portal to core. It
+does not cover portal to web-ui or admin to core, which is how every admin
+operation and every web-ui request reaches core today: the intermediary
+verifies the portal identity header, then calls core under its own source
+authentication and forwards the user assertion beside it[^delegation]. The
+user assertion and the immediate caller's identity are two pieces of evidence
+and core checks both. Deleting the assertion without a replacement leaves
+three options: reject forwarded operations, trust web-ui and admin to assert
+any user, or forward the portal's own bearer. The second grants two more
+services impersonation authority, and the third contradicts per-surface
+identity and binds no user claims to the token. So neither.
+
+The replacement is a **user capability minted by core**. The portal, having
+authenticated a user, calls core under its ServiceAccount token and receives a
+short-lived capability bound to the user, the organization, the scope the
+portal asked for, the portal's ServiceAccount as the impersonator, and an
+expiry. Core signs it under a key only core holds, the same shape as the
+scoped agent capabilities it already mints[^capability], but under a key the
+egress proxy does not share or an asymmetric key whose public half any
+verifier may hold. Intermediaries forward the capability unchanged with their
+own ServiceAccount bearer, and core verifies both: the capability, which
+names the user and the scope and which no intermediary can alter, and the
+intermediary's identity, which is authorized to forward and nothing more.
+Web-ui and admin never hold a portal token and cannot mint a capability. The
+acceptance tests are the three things an intermediary must not be able to do:
+change the user or the impersonator, broaden the scope, or authenticate as
+the portal, alongside the one thing it must: complete a legitimate forwarded
+operation.
 
 **`AUTH_CLIENT_SECRET` stops being a deployed secret.** In the embedded topology
 both halves of the loopback run in the portal pod, so the portal mints it at
@@ -577,14 +614,25 @@ not protect connections opened during scaling, reconnection, or failover.
 Mounted files give no process restart; they do not give no authentication
 outage.
 
-Two honest designs. **Alternating roles**: two login roles `app_a` and `app_b`
-with identical grants. The rotation Job rotates the inactive one's password (a
-Secret change the operator applies), waits until the file has landed in every
-core pod, switches core's pool to the newly rotated role by writing the
-active-role name into the same mounted Secret, and rotates the other on the
-next cycle. No role's password changes while a pool is using it, so the window
-is zero. The Job is what generates and schedules credentials; nothing in
-CloudNativePG does. **Bounded window**: keep one role, accept that new
+Two honest designs. **Alternating roles**: two login roles `app_a` and `app_b` with identical
+grants, rotated by a Job in five steps. _Prepare_: rotate the inactive role's
+password, a Secret change the operator applies and CloudNativePG reconciles.
+_Verify_: open fresh logins as the prepared role with the new password, one
+direct and one through the `Pooler`, and retry until both succeed. Receipt of
+the mounted file by core is not evidence that the operator has reconciled the
+role[^cnpgreload]; only a successful login is, and the pooled path can lag
+the direct one. _Activate_: write a new credential generation into the
+mounted Secret, the active-role name plus a generation counter. _Acknowledge_:
+each core replica reports the generation its pool is using, and the Job waits
+until every replica and the pooled path report the new one. _Retire_: only
+then is the previous role eligible for the next cycle. No role's password
+changes while any pool is using it, so the window is zero, and the previous
+role is never rotated under a consumer that has not cut over. The Job is what
+generates, verifies, and schedules credentials; nothing in CloudNativePG does.
+The acceptance tests delay each of database reconciliation, Secret delivery,
+and one consumer's pool cutover independently, across two consecutive cycles,
+and pass only if no new connection ever presents a password the server does
+not yet hold and no role is rotated while a pool still uses it. **Bounded window**: keep one role, accept that new
 connections fail between the operator's apply and the kubelet's delivery, and
 specify it — the `pg` callback re-reads the file on every attempt, connection
 acquisition retries with backoff for at least the kubelet sync interval, and
@@ -831,9 +879,17 @@ same kind of credential for a second provider and already does PKCE S256 on its
 authorization-code flow. The
 previous revision put these under "can never meet the rotation bar," which
 conflated two things. Rotation cannot be _automated_, because each IdP mints
-the secret in a dashboard with no API to mint another. But the secret can be
-_carried_ by ESO with no code change and rotated by a human without a restart,
-and for some providers it can be removed outright. Its own subsection follows.
+the secret in a dashboard with no API to mint another. But the secret can be _carried_ by ESO, and for some providers it can be
+removed outright. Whether a human rotation propagates without a restart
+depends on the reader: core resolves connector client secrets per use through
+`SecretSource`, so those propagate with no code change; the portal copies
+`OIDC_CLIENT_SECRET` into a module-level configuration at load and builds the
+trusted-entry configuration from `process.env` at initialization[^portalcapture],
+so both portal paths are restart-required until A1 extends the credential
+seam into the portal through the chassis. The acceptance criterion for that
+extension is: rotate either client secret, disable the old value at the test
+IdP, and complete a new login without restarting the portal. Its own
+subsection follows.
 
 **Rotatable, so Tier 2.** Two vendors are verified rotatable through an
 admin API: OpenRouter, through its management keys endpoint, and Resend,
@@ -884,9 +940,10 @@ the one place `SecretSource` is wired today, which means the ESO path already
 exists: on EKS, `SECRETS_BACKEND=aws` under IRSA reads the client secret from
 Secrets Manager with no ESO at all; on GKE, AKS, or on-prem, an
 `ExternalSecret` syncs it from the cloud secret manager into core's own
-`Secret`, mounted as a file, and the Phase A seam reads it there. Either way a
-human still mints the secret in the IdP's dashboard and writes it to the secret
-manager; from that point on, propagation is automatic and restart-free.
+`Secret`, mounted as a file, and the Phase A seam reads it there. Either way a human still mints the secret in the IdP's dashboard and writes
+it to the secret manager; from that point on, propagation to core's connector
+resolver is automatic and restart-free. The portal's two client secrets take
+the same carrier and, until A1 reaches the portal, a restart.
 
 Three things follow.
 
@@ -1016,22 +1073,22 @@ projected token is simpler and the cluster already runs the issuer.
 
 ## Risks
 
-| Risk                                                                           | Mitigation                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The split's hand-maintained routing lists drift from the spec list             | A1 renders them from the spec; until then the split accepts that drift, and its render check pins the lists only against the chart's own table                                                                             |
-| Phase A lands and the later phases do not, leaving refactor without benefit    | The Secret split already landed on its own; schedule `NPM_TOKEN` and the database credential the same way so value lands either way                                                                                        |
-| An ESO refresh rotates a shared key and takes the fleet down                   | A2 lands before any `refreshInterval` is set on a single-value key, and its activate step waits for every verifier to report the new generation                                                                            |
-| A producer refreshes to the new key before a verifier holds it                 | Prepare precedes activate in A2; current-plus-previous alone does not cover this ordering and is not the design                                                                                                            |
-| Bearer tokens transit the chart's plain-HTTP service URLs                      | B1 refuses bearer mode unless TLS or an enforced encrypted network is configured; the chart wires TLS to core when bearer mode is on                                                                                       |
-| The database password changes on the server before core's mounted file updates | Alternating login roles in B2; the active role switches only after the file has landed in every pod, and no role's password changes while a pool uses it                                                                   |
-| A rotated value is invisible to a running pod                                  | Core reads through the seam from a file-mounted Secret the kubelet updates in place, or under `SECRETS_BACKEND=aws` with a cache TTL; a reloader is the fallback only for values that must stay in `envFrom`               |
-| `TokenReview` becomes a hard dependency on core's request path                 | A revocation-latency budget bounds the cache; serve from cache only within it when the API server is unreachable, fail closed past it, and never turn an explicit rejection into success through offline JWKS verification |
-| The pooled-path invariant blocks partial migration                             | `pooledDatabaseUrl` changes in B2 under both designs; RDS Proxy on RDS and the CloudNativePG `Pooler` in-cluster each make the pooled path token- or operator-authenticated                                                |
-| The Porter token stays because B4 is large                                     | The per-workload split already keeps it out of every pod but core; B4 covers both the sandbox and the publishing consumer                                                                                                  |
-| Targets without a workload issuer diverge from Kubernetes                      | Keep the HMAC and KMS paths as explicit `federation` variants, exercised by the same tests                                                                                                                                 |
-| The work stalls halfway and the system carries both mechanisms forever         | Each phase deletes its secret from the spec list as its last step; a half-finished phase is visible in that list                                                                                                           |
-| A rolling upgrade kills an in-flight turn                                      | Core has ECS task protection and no Kubernetes equivalent[^ecstaskprot]; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                                 |
-| An exchanged Anthropic bearer is refreshed from an unrotated projected file    | B5 mints a fresh token per exchange through the TokenRequest API; never re-read the projected file for a refresh                                                                                                           |
+| Risk                                                                           | Mitigation                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The split's hand-maintained routing lists drift from the spec list             | A1 renders them from the spec; until then the split accepts that drift, and its render check pins the lists only against the chart's own table                                                                                                 |
+| Phase A lands and the later phases do not, leaving refactor without benefit    | The Secret split already landed on its own; schedule `NPM_TOKEN` and the database credential the same way so value lands either way                                                                                                            |
+| An ESO refresh rotates a shared key and takes the fleet down                   | A2 lands before any `refreshInterval` is set on a single-value key, and its activate step waits for every verifier to report the new generation                                                                                                |
+| A producer refreshes to the new key before a verifier holds it                 | Prepare precedes activate in A2; current-plus-previous alone does not cover this ordering and is not the design                                                                                                                                |
+| Bearer tokens transit the chart's plain-HTTP service URLs                      | B1 refuses bearer mode unless TLS or an enforced encrypted network is configured; the chart wires TLS to core when bearer mode is on                                                                                                           |
+| The database password changes on the server before core's mounted file updates | Alternating login roles in B2; the active role switches only after fresh direct and pooled logins succeed with the prepared credential and every consumer acknowledges the new generation, and no role's password changes while a pool uses it |
+| A rotated value is invisible to a running pod                                  | Core reads through the seam from a file-mounted Secret the kubelet updates in place, or under `SECRETS_BACKEND=aws` with a cache TTL; a reloader is the fallback only for values that must stay in `envFrom`                                   |
+| `TokenReview` becomes a hard dependency on core's request path                 | A revocation-latency budget bounds the cache; serve from cache only within it when the API server is unreachable, fail closed past it, and never turn an explicit rejection into success through offline JWKS verification                     |
+| The pooled-path invariant blocks partial migration                             | `pooledDatabaseUrl` changes in B2 under both designs; RDS Proxy on RDS and the CloudNativePG `Pooler` in-cluster each make the pooled path token- or operator-authenticated                                                                    |
+| The Porter token stays because B4 is large                                     | The per-workload split already keeps it out of every pod but core; B4 covers both the sandbox and the publishing consumer                                                                                                                      |
+| Targets without a workload issuer diverge from Kubernetes                      | Keep the HMAC and KMS paths as explicit `federation` variants, exercised by the same tests                                                                                                                                                     |
+| The work stalls halfway and the system carries both mechanisms forever         | Each phase deletes its secret from the spec list as its last step; a half-finished phase is visible in that list                                                                                                                               |
+| A rolling upgrade kills an in-flight turn                                      | Core has ECS task protection and no Kubernetes equivalent[^ecstaskprot]; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                                                     |
+| An exchanged Anthropic bearer is refreshed from an unrotated projected file    | B5 mints a fresh token per exchange through the TokenRequest API; never re-read the projected file for a refresh                                                                                                                               |
 
 ## Decisions taken
 
@@ -1196,8 +1253,14 @@ folded into a phase or recorded above as a decision.
 
 [^portaljwks]: `plugins/portal/src/oidc.ts:98` — `verifyIdToken` validates signature, issuer, audience, and nonce against the provider's `jwksUri`, and serves both `/auth/callback` and `/auth/trusted/callback`.
 
+[^delegation]: `plugins/admin/src/index.ts:83` reads the `x-portal-identity` header, `:86` verifies it under `PORTAL_IDENTITY_SECRET`, and `:199` signs the call to core under `CORE_SIGNING_SECRET`; `plugins/web-ui/server/index.ts:371` verifies the same header; `src/api/server.ts:293` verifies it again in core.
+
+[^capability]: `src/auth/capability-token.ts` mints and verifies the scoped capabilities agents carry; `src/egress-authz-main.ts:92` verifies them under `CAPABILITY_SECRET`, which is why a user capability needs a key the egress proxy does not hold or an asymmetric one.
+
+[^portalcapture]: `plugins/portal/src/index.ts:152` copies `OIDC_CLIENT_SECRET` from `process.env` into the module-level `OIDC` configuration; `:208` builds the trusted-entry configuration from `process.env` once at load.
+
 [^ecstaskprot]: `src/wiring.ts:2019` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
 
 [^ses]:
     `cli/src/commands/setup.ts:92` — "for SES, the SMTP credential, not an AWS access key".
-    | `PORTAL_TRUSTED_OIDC_CLIENT_SECRET` | portal | trusted-entry PoC; static OAuth client secret, 32+ chars, distinct from the other three; undeclared by the CLI | 2 |
+    | `PORTAL_TRUSTED_OIDC_CLIENT_SECRET` | portal | trusted-entry PoC; static OAuth client secret, 32+ chars, distinct from the other three; undeclared by the CLI, restart-required until A1 reaches the portal | 2 |
