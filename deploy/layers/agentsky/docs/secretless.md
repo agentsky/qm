@@ -905,9 +905,9 @@ subsection follows.
 admin API: OpenRouter, through its management keys endpoint, and Resend,
 through its create-API-key endpoint. OpenAI is federated in B5 and no longer
 belongs here. An ESO `Webhook` generator or a scheduled Job closes the loop
-on the carrier side; the consumer side is the SES bullet below, since the
-Resend key has the same two consumers and the same construction-time
-capture. Two more join them with a mechanism rather than an API:
+on the carrier side; the consumer side is the SES bullet below, since the Resend key is captured
+at construction the same way, by two consumers rather than one: the auth
+broker and core's invitation mailer. Two more join them with a mechanism rather than an API:
 
 - **`SLACK_BOT_TOKEN`.** Slack's token rotation is an opt-in, per-app, one-way
   setting: bot and user tokens get a 12-hour lifetime with a refresh token, an
@@ -943,7 +943,10 @@ capture. Two more join them with a mechanism rather than an API:
   claiming restart-free rotation. Acceptance test: start the broker, rotate
   the SES pair, confirm the running mailer adopted the new generation,
   disable the old access key, and send a sign-in email without a restart;
-  repeat for Resend by revoking the old API key.
+  attempt a login with the new user name and the old password and confirm
+  the record is rejected as mixed; repeat for Resend by revoking the old API
+  key, and there send both a sign-in email from the broker and an invitation
+  email from core, since core is Resend's second consumer.
 
 **Can never meet the rotation bar.** `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`,
 and `SMTP_PASSWORD` on any relay other than SES. Each is minted in a vendor
@@ -1034,9 +1037,9 @@ longer the route to a keyless model call.
 SES is Tier 2, as Phase D says. The existing route is the SMTP interface,
 which the CLI tells operators to configure with "the SMTP credential, not an AWS
 access key"[^ses]; that credential is derived from an IAM access key, user name and password
-together, and rotates through the published Lambda rotation, which is what
-puts `SMTP_PASSWORD` at Tier 2 on SES and Tier 3 on any other relay, once
-the auth mailer stops capturing the pair at construction. An
+together, and rotates through the published Lambda rotation, which is what puts `SMTP_PASSWORD` at Tier 2 on SES and Tier 3 on any other
+relay; the auth mailer capturing the pair at construction is a restart caveat
+on that rotation, not a change of tier. An
 IAM-authenticated SES transport would remove it entirely; that is a new
 transport implementation and a deliberate deferral.
 
@@ -1304,8 +1307,8 @@ folded into a phase or recorded above as a decision.
 
 [^ses]: `cli/src/commands/setup.ts:92` — "for SES, the SMTP credential, not an AWS access key".
 
-[^sessmtp]: AWS, _Obtaining Amazon SES SMTP credentials_, <https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html> — the SMTP user name is the IAM access key ID and the SMTP password is derived from the secret access key, so a new access key changes both. Cited by the external review; the AWS docs host was unreachable from this session, so this rests on the review's reading and on the CLI's own guidance at `cli/src/commands/setup.ts:92`.
+[^sessmtp]: AWS, _Obtaining Amazon SES SMTP credentials_, <https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html> — the SMTP user name is the IAM access key ID and the SMTP password is derived from the secret access key, so a new access key changes both. Cited by the external review; the AWS docs host was unreachable from this session, so this rests on the review's reading of that page alone.
 
 [^mailers]: `plugins/auth/src/index.ts:17` — `CFG = readConfig(process.env)` once at load; `:29` — `mailerFor(CFG)` once; `plugins/auth/src/email.ts:23` captures `Bearer ${cfg.resendApiKey}` at construction and `:56` copies `cfg.smtp` into the options every send reuses.
 
-[^coremailer]: `src/wiring.ts:2279` — `createResendMailer(config.resendApiKey, config.emailFrom)` at boot; `src/admin/invite-email.ts:18` sends the captured bearer.
+[^coremailer]: `src/wiring.ts:2280` — `createResendMailer(config.resendApiKey, config.emailFrom)`, guarded at `:2279` and built once at boot from `src/index.ts:25`; `src/admin/invite-email.ts:18` sends the captured bearer.
