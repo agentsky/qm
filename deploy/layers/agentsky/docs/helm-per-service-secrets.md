@@ -403,10 +403,13 @@ external-OIDC values file with `services.auth.enabled=false`,
 only client-credential inputs, and every `OIDC_*` value unset, must render
 all three aliases into the portal Secret and must not fail on the two
 `AUTH_CLIENT_*` inputs; the same file with `OIDC_ALLOWED_EMAILS` set must
-render that value instead; the same file with `OIDC_CLIENT_SECRET` also set
-must render the explicit value and fail on the now-unused
-`AUTH_CLIENT_SECRET`; and an unrelated unused key in any of these files must
-still fail; `services.auth.envFrom` must reach the portal Deployment and no
+render that value instead; the same file with `OIDC_CLIENT_SECRET` also set must render the explicit
+value and fail on the now-unused `AUTH_CLIENT_SECRET`, and likewise for
+`OIDC_CLIENT_ID` over `AUTH_CLIENT_ID`; the same file with
+`OIDC_ALLOWED_EMAILS` also set must render the explicit value and _not_ fail
+on `AUTH_ALLOWED_EMAILS`, because core lists that name and consumes it
+directly, which is the one asymmetry among the three sources; and an
+unrelated unused key in any of these files must still fail; `services.auth.envFrom` must reach the portal Deployment and no
 other, `services.admin.envFrom` the web-ui Deployment and no other, and
 disabling the component must remove its references. The assertions live in a shell test next
 to the chart and run in the existing `Lint` job, which already checks the
