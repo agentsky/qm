@@ -60,34 +60,21 @@ jobs:
       - name: Core checks passed
         run: echo "Core typecheck and root test shards passed."
 
-  cli:
-    name: CLI
+  helm-k3s-e2e:
+    name: Helm k3s e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - name: Deploy the chart onto k3s
+        run: bash scripts/k3s-e2e.sh
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: |
-            cli/package-lock.json
-            package-lock.json
-      - name: Install, typecheck, unit + packaged-artifact + e2e tests
-        working-directory: cli
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-          npm run test:e2e
-      - name: Install root dependencies
-        run: npm ci
-      - name: Build the CLI package
-        working-directory: cli
-        run: npm run build
-      - name: Deployment stack contracts
-        run: |
-          npm run typecheck:contract
-          node --test "deploy/stacks/*/test/*.test.ts"
+          name: k3s-e2e-logs
+          path: .k3s-e2e-logs/
+          if-no-files-found: ignore
 
   coauthor-trailers:
     name: Co-author trailers

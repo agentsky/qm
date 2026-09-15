@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../src/wiring.ts";
-import { createSpritesSandbox } from "../src/sandbox/sprites-sandbox.ts";
+import { createSmolmachinesSandbox } from "../src/sandbox/smolmachines-sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createKeychain, KeychainError, type Keychain } from "../src/credentials/keychain.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
@@ -18,12 +18,16 @@ import {
   DEVICE_FLOW_ORIGIN,
 } from "../src/credentials/device-flow-persist.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
-import { installGlobalFakeSprites, type FakeSprites } from "./support/fake-sprites.ts";
+import {
+  installGlobalFakeSmolmachines,
+  FAKE_SMOLMACHINES_TOKEN,
+  type FakeSmolmachines,
+} from "./support/fake-smolmachines.ts";
 import { testConfig } from "./support/test-config.ts";
 
-let ff: FakeSprites;
+let ff: FakeSmolmachines;
 before(() => {
-  ff = installGlobalFakeSprites();
+  ff = installGlobalFakeSmolmachines();
 });
 beforeEach(() => ff.reset());
 after(() => ff.cleanup());
@@ -34,11 +38,10 @@ function kc(): Keychain {
   return createKeychain({ creds: createMemoryMap(), grants: createMemoryMap(), asks: createMemoryMap(), key: KEY });
 }
 
-function sprites() {
+function smol() {
   const dir = mkdtempSync(join(tmpdir(), "dfp-ws-"));
-  return createSpritesSandbox(createLocalWorkspaceStore(dir), {
-    token: "test-token",
-    client: ff.client,
+  return createSmolmachinesSandbox(createLocalWorkspaceStore(dir), {
+    token: FAKE_SMOLMACHINES_TOKEN,
     fetchImpl: ff.fetchImpl,
   });
 }
@@ -70,7 +73,7 @@ test("deviceFlowCredOwner: the person on their own personal box, the scope on a 
 });
 
 test("capture saves changed login bundles per service and fingerprint-skips unchanged ones", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   const login = await sb.run(
@@ -96,7 +99,7 @@ test("capture saves changed login bundles per service and fingerprint-skips unch
 });
 
 test("capture grabs the AWS SSO token under .aws/sso/cache; gcloud's cache/logs bulk dirs are pruned", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   const setup = await sb.run(
@@ -136,7 +139,7 @@ test("capture grabs the AWS SSO token under .aws/sso/cache; gcloud's cache/logs 
 });
 
 test("an unregistered ~/.config tool is neither swept nor stored (known services still are)", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(
@@ -158,7 +161,7 @@ test("an unregistered ~/.config tool is neither swept nor stored (known services
 });
 
 test("lossless migration only follows device-flow records, not operator-saved credentials", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/opsaved && printf 'operator_secret' > ~/.config/opsaved/auth.json");
@@ -179,7 +182,7 @@ test("lossless migration only follows device-flow records, not operator-saved cr
 });
 
 test("lossless migration: a service captured before keeps being swept via its record targets", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -203,7 +206,7 @@ test("lossless migration: a service captured before keeps being swept via its re
 });
 
 test("pre-XDG holdout: a tool that keeps its login in ~/.<tool> (fly) is captured + restored", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -218,7 +221,7 @@ test("pre-XDG holdout: a tool that keeps its login in ~/.<tool> (fly) is capture
 });
 
 test("large multi-file bundle round-trips intact (past the exec ~16KiB request + ~4MB response caps)", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -263,7 +266,7 @@ test("large multi-file bundle round-trips intact (past the exec ~16KiB request +
 });
 
 test("shape backstop: a registered path that balloons past the caps is skipped loudly, not stored", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(
@@ -286,7 +289,7 @@ test("shape backstop: a registered path that balloons past the caps is skipped l
 });
 
 test("a browser profile under ~/.config no longer trips the capture — neither swept nor warned", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   const setup = await sb.run(
@@ -314,7 +317,7 @@ test("a browser profile under ~/.config no longer trips the capture — neither 
 });
 
 test("materialize round-trip: login → machine replaced → files restored 0600 behind the symlinks", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -340,7 +343,7 @@ test("materialize round-trip: login → machine replaced → files restored 0600
 });
 
 test("materialize never overwrites a file already on disk — the live machine's login wins", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/gh && printf 'oauth_token: gho_OLD' > ~/.config/gh/hosts.yml");
@@ -353,7 +356,7 @@ test("materialize never overwrites a file already on disk — the live machine's
 });
 
 test("a legacy bundle stamped with a past expiresAt (by the deleted refresher) still restores", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   await k.save({
     ownerId: "U1",
@@ -372,9 +375,8 @@ test("a legacy bundle stamped with a past expiresAt (by the deleted refresher) s
 
 test("ACMECLI quarantine removes the canonical root even with no record or a stale partial record", async () => {
   const dir = mkdtempSync(join(tmpdir(), "dfp-ws-"));
-  const sb = createSpritesSandbox(createLocalWorkspaceStore(dir), {
-    token: "test-token",
-    client: ff.client,
+  const sb = createSmolmachinesSandbox(createLocalWorkspaceStore(dir), {
+    token: FAKE_SMOLMACHINES_TOKEN,
     fetchImpl: ff.fetchImpl,
     credentialPaths: [{ path: ".acmecli", kind: "directory" }],
   });
@@ -523,7 +525,7 @@ test("removing platform credential vending preserves stored quarantine on person
 });
 
 test("capture never clobbers an operator-saved record for a swept service", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/gh && printf 'oauth_token: gho_BOX' > ~/.config/gh/hosts.yml");
@@ -542,7 +544,7 @@ test("capture never clobbers an operator-saved record for a swept service", asyn
 });
 
 test("a shared-box capture sweeps only the scope owner's roots, never another person's registrations", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const shared = scopeId("channel", "C1");
   const h = await sb.provision(rw(shared));
@@ -560,7 +562,7 @@ test("a shared-box capture sweeps only the scope owner's roots, never another pe
 });
 
 test("a registered file under an already-swept dotdir is not tarred twice", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, 'mkdir -p ~/.aws/sso/cache && printf \'{"accessToken":"sso_X"}\' > ~/.aws/sso/cache/token.json');
@@ -619,7 +621,7 @@ test("keychain.save with expectedOrigin atomically refuses to overwrite a foreig
 });
 
 test("registered roots beyond the cap are dropped with one anomaly, after collapsing covered roots", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   for (let i = 0; i < 70; i++) {
@@ -651,7 +653,7 @@ test("registered roots beyond the cap are dropped with one anomaly, after collap
 });
 
 test("the cap drops whole services, never a subset of one record's files", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   const paths = Array.from({ length: 70 }, (_, i) => `.tool/f${i}.json`);
@@ -677,7 +679,7 @@ test("the cap drops whole services, never a subset of one record's files", async
 });
 
 test("register_login captures a real CLI login and it survives a machine rebuild", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -704,7 +706,7 @@ test("register_login captures a real CLI login and it survives a machine rebuild
 });
 
 test("a registered service keeps being swept — a later rotation is captured without re-registering", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/rotato && printf 'refresh_v1' > ~/.config/rotato/creds");
@@ -722,7 +724,7 @@ test("a registered service keeps being swept — a later rotation is captured wi
 });
 
 test("register_login rejects paths outside the service, built-in overlaps, and missing files", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   const base = { sandbox: sb, handle: h, keychain: k, ownerId: "U1" };
@@ -743,7 +745,7 @@ test("register_login rejects paths outside the service, built-in overlaps, and m
 });
 
 test("register_login refuses to adopt a service already owned by an operator/API save", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.opstool && printf 'x' > ~/.opstool/creds");
@@ -767,7 +769,7 @@ test("register_login refuses to adopt a service already owned by an operator/API
 });
 
 test("register_login handles a .cache/<tool> layout and re-captures rotations under the declared service", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.cache/huggingface && printf 'hf_v1' > ~/.cache/huggingface/token");
@@ -794,7 +796,7 @@ test("register_login handles a .cache/<tool> layout and re-captures rotations un
 });
 
 test("capture-on-change: an unchanged box ships nothing — gated by the box-side hash, not just the fingerprint", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/gh && printf 'oauth_token: gho_V1' > ~/.config/gh/hosts.yml");
@@ -817,7 +819,7 @@ test("capture-on-change: an unchanged box ships nothing — gated by the box-sid
 });
 
 test("capture-on-change: a rebuilt box (no state file) re-ships everything", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -836,7 +838,7 @@ test("capture-on-change: a rebuilt box (no state file) re-ships everything", asy
 });
 
 test("restore preserves each file's captured mode, defaulting old records to 0600", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -865,7 +867,7 @@ test("restore preserves each file's captured mode, defaulting old records to 060
 });
 
 test("a failed mid-bundle restore rolls back that bundle's files instead of leaving a partial set", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -901,7 +903,7 @@ test("a failed mid-bundle restore rolls back that bundle's files instead of leav
 });
 
 test("a root that mutates during the tar is reported volatile and its service is skipped this turn", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/gh && printf 'oauth_token: gho_MIDWRITE' > ~/.config/gh/hosts.yml");
@@ -928,7 +930,7 @@ test("a root that mutates during the tar is reported volatile and its service is
 });
 
 test("~/.netrc: whole-file capture keeps every tool's entries, and a live machine's copy is never clobbered", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const layers = rw(scopeId("personal", "U1"));
   const h1 = await sb.provision(layers);
@@ -953,7 +955,7 @@ test("~/.netrc: whole-file capture keeps every tool's entries, and a live machin
 });
 
 test("a squatted quarantine dir makes capture fail LOUDLY, never silently skip", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(
@@ -962,12 +964,12 @@ test("a squatted quarantine dir makes capture fail LOUDLY, never silently skip",
   );
   await assert.rejects(
     captureDeviceFlowLogins({ sandbox: sb, handle: h, keychain: k, ownerId: "U1" }),
-    /workspace unavailable|write .* failed/,
+    /workspace unavailable|write .*(failed|http \d{3})/,
   );
 });
 
 test("old-name debris (.agent-cred-*) is reaped by the next capture", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(
@@ -981,7 +983,7 @@ test("old-name debris (.agent-cred-*) is reaped by the next capture", async () =
 });
 
 test("a static sweep anomaly fires once, not on every subsequent capture", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.config/gh && printf 'oauth_token: gho_X' > ~/.config/gh/hosts.yml");
@@ -1007,7 +1009,7 @@ test("a static sweep anomaly fires once, not on every subsequent capture", async
 });
 
 test("register_login under a cap-blown fixed dotdir is allowed until the auto service actually persists", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "mkdir -p ~/.cargo && printf 'crates_TOKEN' > ~/.cargo/credentials.toml");
@@ -1048,7 +1050,7 @@ test("register_login under a cap-blown fixed dotdir is allowed until the auto se
 });
 
 test("register_login refuses capture bookkeeping paths", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const h = await sb.provision(rw(scopeId("personal", "U1")));
   await sb.run(h, "printf 'notacred' > ~/.cred-state");
@@ -1066,7 +1068,7 @@ test("register_login refuses capture bookkeeping paths", async () => {
 });
 
 test("a concurrent-save race skips that service and retries it on the next capture", async () => {
-  const sb = sprites();
+  const sb = smol();
   const k = kc();
   const anomalies: string[] = [];
   const h = await sb.provision(rw(scopeId("personal", "U1")));

@@ -4,7 +4,6 @@ import {
   compileApproval,
   parseToolDescriptor,
   type ToolCredentialPath,
-  type ToolCredentialBroker,
   type ToolDescriptor,
   type ToolInstallFile,
 } from "./deployment-layer.ts";
@@ -20,17 +19,9 @@ export interface DeploymentLayerRuntime {
   hints: string[];
   credentialPaths: ToolCredentialPath[];
   splitEnvTemplates: Record<string, string>[];
-  brokeredTools: BrokeredLayerTool[];
   commandRules: CommandRule[];
   credentialTools: LayerCredentialTool[];
   installFiles: LayerInstallFile[];
-}
-
-export interface BrokeredLayerTool {
-  service: string;
-  binary: string;
-  roots: string[];
-  broker: ToolCredentialBroker;
 }
 
 export interface LayerInstallFile {
@@ -53,7 +44,6 @@ export function emptyDeploymentLayer(): DeploymentLayerRuntime {
     hints: [],
     credentialPaths: [],
     splitEnvTemplates: [],
-    brokeredTools: [],
     commandRules: [],
     credentialTools: [],
     installFiles: [],
@@ -105,17 +95,6 @@ function assertDisjointCredentialLinks(tools: ToolDescriptor[]): void {
   }
 }
 
-function toolService(tool: ToolDescriptor, why: string): string {
-  const services = new Set(
-    (tool.auth?.credentialPaths ?? []).flatMap((entry) => credentialServiceForPath(entry.path) ?? []),
-  );
-  if (services.has(tool.id) || services.size === 0) return tool.id;
-  if (services.size === 1) return [...services][0]!;
-  throw new Error(
-    `deployment tool "${tool.id}" has ${why} but its credential paths map to multiple services: ${[...services].join(", ")}`,
-  );
-}
-
 function toolServices(tool: ToolDescriptor): string[] {
   const services = new Set(
     (tool.auth?.credentialPaths ?? []).flatMap((entry) => credentialServiceForPath(entry.path) ?? []),
@@ -131,40 +110,21 @@ export function resolvedDeploymentLayer(
   assertDisjointCredentialLinks(tools);
   assertDistinctInstallTargets(tools);
   const withAuth = tools.filter((t) => t.auth);
-  const brokered = withAuth.filter((t) => t.auth!.broker);
-  if (brokered.length > 1) {
-    throw new Error(
-      `deployment layer declares credential brokers on multiple tools (${brokered.map((t) => t.id).join(", ")}) — ambient credential vending supports one brokered tool per deployment`,
-    );
-  }
   return {
     dir,
     tools,
-    connectors: withAuth
-      .filter((t) => !t.auth!.broker)
-      .map((t) => ({
-        id: t.id,
-        label: t.label ?? t.id,
-        check: t.auth!.check,
-        reauth: t.auth!.reauth,
-      })),
+    connectors: withAuth.map((t) => ({
+      id: t.id,
+      label: t.label ?? t.id,
+      check: t.auth!.check,
+      reauth: t.auth!.reauth,
+    })),
     advertisedTools: tools.flatMap((t) => (t.advertise ? [t.advertise] : [])),
     hints: tools.flatMap((t) => t.hints ?? []),
     credentialPaths: [
       ...new Map(withAuth.flatMap((t) => t.auth!.credentialPaths ?? []).map((entry) => [entry.path, entry])).values(),
     ],
     splitEnvTemplates: withAuth.flatMap((t) => (t.auth!.splitEnv ? [t.auth!.splitEnv] : [])),
-    brokeredTools: brokered.map((t) => {
-      const service = toolService(t, "a credential broker");
-      return {
-        service,
-        binary: t.install?.binary ?? t.id,
-        roots: (t.auth!.credentialPaths ?? []).flatMap((entry) =>
-          credentialServiceForPath(entry.path) === service ? [entry.path] : [],
-        ),
-        broker: t.auth!.broker!,
-      };
-    }),
     commandRules: tools.flatMap((tool) =>
       (tool.approvals ?? []).map((approval) => ({
         ...compileApproval(tool.install?.binary ?? tool.id, approval),
@@ -192,7 +152,6 @@ export function replaceDeploymentLayer(target: DeploymentLayerRuntime, source: D
     "hints",
     "credentialPaths",
     "splitEnvTemplates",
-    "brokeredTools",
     "commandRules",
     "credentialTools",
     "installFiles",

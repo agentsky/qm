@@ -8,7 +8,7 @@ interface SlackBotManifest {
 let template: string | undefined;
 
 export function slackBotManifestCreationUrl(name?: string): string {
-  template ??= readFileSync(new URL("../../cli/templates/slack-manifest.json", import.meta.url), "utf8");
+  template ??= readFileSync(new URL("../slack/manifest.json", import.meta.url), "utf8");
   const manifest = JSON.parse(template) as SlackBotManifest;
   const label = [...(name?.trim() || "qm")].slice(0, 35).join("");
   manifest.display_information.name = label;

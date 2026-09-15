@@ -87,20 +87,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
   } = ctx;
 
   let ownerAuthCommand: ((command: string) => string) | undefined;
-  const brokerEnvKeys = [
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_REGION",
-    "AWS_DEFAULT_REGION",
-  ];
-  const unsetBrokerEnv = (env: Record<string, string>): string => {
-    const keys = brokerEnvKeys.filter((key) => !(key in env));
-    return keys.length ? `unset ${keys.join(" ")}; ` : "";
-  };
-  const scopedCommand = credentialCutoverServices.length
-    ? (command: string): string => `${unsetBrokerEnv(connectorEnv)}${command}`
-    : undefined;
   if (ownerAuthAvailable) {
     ownerAuthCommand = (command) => {
       for (const credentialId of ownerEnvCredentialIds) {
@@ -115,7 +101,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
       const exports = Object.entries(ownerAuthEnv)
         .map(([key, value]) => `${key}=${shq(value)}`)
         .join(" ");
-      return `unset AGENT_API_TOKEN AGENT_OAUTH_CONSENT_TOKEN AGENT_CREDENTIAL_TOKEN; ${unsetBrokerEnv(ownerAuthEnv)}${exports ? `export ${exports}; ` : ""}${command}`;
+      return `unset AGENT_API_TOKEN AGENT_OAUTH_CONSENT_TOKEN AGENT_CREDENTIAL_TOKEN; ${exports ? `export ${exports}; ` : ""}${command}`;
     };
   }
   const box: {
@@ -662,7 +648,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     scratchBox,
     ownerAuthBox,
     ownerAuthCommand,
-    scopedCommand,
     provision,
     provisionScratch,
     provisionResource,

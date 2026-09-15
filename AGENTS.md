@@ -77,11 +77,11 @@ Two habits that keep task-focused changes from scarring the rest of the repo:
 
 Before acting, run `git remote -v` and inspect the checkout. `origin` pointing at
 `yc-software/qm` identifies upstream. Another origin alone does not identify a source
-fork: a package deployment has its own `qm.config.jsonc` and pinned `@yc-software/qm`
-dependency, while a source fork carries the QM source tree and upstream ancestry.
+fork: a source fork carries the QM source tree and upstream ancestry.
 
-Package deployments customize config, tools, skills, and services without copying core.
-Source forks may modify core freely, including runtime, plugins, CLI, docs, and CI;
+A deployment is a Helm values overlay over the chart in `deploy/helm/`, which customizes
+config, tools, skills, and services without copying core. Source forks may modify core
+freely, including runtime, plugins, docs, and CI;
 contributing those changes upstream is optional. Keep private deployment material under
 `deploy/layers/<org>/` in private source forks or in a separate private deployment
 repository for public source checkouts. Secrets never enter Git. The README section
@@ -91,7 +91,7 @@ Create private source forks as standalone repositories outside GitHub's fork net
 Seed only `main` and set the default branch explicitly; never use `git push --mirror`.
 Use `update-qm` to merge source updates without rebasing published history or discarding
 intentional local changes. Land source-sync PRs without squashing or rebasing away their
-upstream ancestry. Package deployments update their dependency instead.
+upstream ancestry.
 
 In downstream repositories, pass `--repo` to every `gh` command so the upstream remote
 cannot redirect an operation. When contributing from private work, use `upstream-pr`

@@ -1,4 +1,4 @@
 interface:
   display_name: "Update QM"
-  short_description: "Update a QM source fork or package deployment"
-  default_prompt: "Use $update-qm to update this QM source fork or package deployment and open a PR."
+  short_description: "Update a QM source fork"
+  default_prompt: "Use $update-qm to update this QM source fork and open a PR."

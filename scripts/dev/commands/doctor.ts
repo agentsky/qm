@@ -212,7 +212,7 @@ export async function runDoctor(opts: { json: boolean; fix: boolean; store: stri
       severity: "info",
       detail: existsSync(join(worktree, "src/sandbox/local-sandbox.ts"))
         ? "worktree supports the local sandbox backend"
-        : "worktree predates the local sandbox backend (dev up will refuse; use --sandbox sprites)",
+        : "worktree predates the local sandbox backend (dev up will refuse; use --sandbox e2b)",
     });
   }
 

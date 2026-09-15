@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { buildApp } from "../src/wiring.ts";

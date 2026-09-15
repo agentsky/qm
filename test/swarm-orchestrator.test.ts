@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import * as modalClient from "../src/sandbox/modal-client.ts";
@@ -65,7 +65,7 @@ for (const kind of ["command", "security-screen"] as const) {
         : {}),
     };
     try {
-      const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Root");
+      const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "smolmachines", "Root");
       await built.sandboxResources.setDefault("U1", "personal:U1", rootComputer.id);
       await built.app.turn({
         ...request,
@@ -135,7 +135,7 @@ test("wired swarm outbox drives the real orchestrator, durable runs, and authent
     const root = (await built.sessions.get(rootTurn.sessionId!))!;
     await built.memory.replace(root.scopeId, "# Memory\n- Root memory remains in the authorized notebook.");
     const rootRun = (await built.runs.list()).find((run) => run.request.conversation.threadRef === root.threadRef)!;
-    const forum = await built.sandboxResources.create("U1", root.scopeId, "sprites", "Integration forum");
+    const forum = await built.sandboxResources.create("U1", root.scopeId, "smolmachines", "Integration forum");
     const service = built.app.swarms!;
     const caller = { kind: "human" as const, actorId: "U1", sessionId: root.id, runId: rootRun.id };
     await service.spawn(caller, {
@@ -178,7 +178,7 @@ test("wired swarm outbox drives the real orchestrator, durable runs, and authent
     const peers = (await service.inspect(caller)).peers;
     assert.equal(peers.filter((peer) => peer.state === "ready").length, 3);
     for (const peer of peers.slice(1)) {
-      assert.equal((await built.sandboxResources.get(peer.sandboxId!)).backend, "sprites");
+      assert.equal((await built.sandboxResources.get(peer.sandboxId!)).backend, "smolmachines");
       assert.equal(peer.forumSandboxId, forum.id);
       assert.notEqual(peer.sandboxId, forum.id);
     }
@@ -254,7 +254,7 @@ for (const storage of ["memory", "postgres"] as const) {
               action: "spawn",
               requestId: "pool",
               count: 3,
-              backend: "sprites",
+              backend: "smolmachines",
               settings: { agents: 8, turnMs: 900_000 },
               text: "http-swarm-worker",
             }
@@ -282,7 +282,7 @@ for (const storage of ["memory", "postgres"] as const) {
           assert.equal(view.peers.length, 4);
           assert.equal(view.settings.turnMs, 900_000);
           assert.equal(view.settings.agents, 8);
-          assert.equal(view.backend, "sprites");
+          assert.equal(view.backend, "smolmachines");
           for (const message of [
             { action: "send", requestId: "self", audience: [view.self.id], text: "http-self-note" },
             { action: "send", requestId: "all", audience: "all", notify: false, text: "http-shared-note" },
@@ -306,7 +306,7 @@ for (const storage of ["memory", "postgres"] as const) {
         }
       };
       try {
-        const computer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "HTTP test root");
+        const computer = await built.sandboxResources.create("U1", "personal:U1", "smolmachines", "HTTP test root");
         await built.sandboxResources.setDefault("U1", "personal:U1", computer.id);
         const body = JSON.stringify({
           surface: "web",

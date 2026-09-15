@@ -33,6 +33,7 @@ const ACMECLI_SHAPED = {
     check: "acmecli me",
     reauth: "acmecli login --use-device-code",
     credentialPaths: [credentialDirectory(".acmecli"), credentialDirectory(".aws")],
+    splitEnv: { ACMECLI_ACTING_SLACK_USER_ID: "{actingSlackUserId}", ACMECLI_PLATFORM: "slack" },
   },
 };
 
@@ -55,17 +56,15 @@ test("loadDeploymentLayer derives the runtime shapes from tool descriptors", () 
     { pattern: "\\bacmecli\\b[^;|&]*\\blogin\\b", decision: "deny", reason: "ambient authentication" },
   ]);
   assert.deepEqual(layer.credentialPaths, [credentialDirectory(".acmecli"), credentialDirectory(".aws")]);
+  assert.deepEqual(layer.splitEnvTemplates, [
+    { ACMECLI_ACTING_SLACK_USER_ID: "{actingSlackUserId}", ACMECLI_PLATFORM: "slack" },
+  ]);
 });
 
 test("credential tools resolve to service and quarantine roots", () => {
   const layer = loadDeploymentLayer(
     layerDir({
-      acmecli: {
-        ...ACMECLI_SHAPED,
-        auth: {
-          ...ACMECLI_SHAPED.auth,
-        },
-      },
+      acmecli: ACMECLI_SHAPED,
       jq: { id: "jq" },
     }),
   );
@@ -85,6 +84,7 @@ test("loadDeploymentLayer: an authless tool contributes no connector or paths", 
   const layer = loadDeploymentLayer(layerDir({ helper: { id: "helper", advertise: "helper tool" } }));
   assert.deepEqual(layer.connectors, []);
   assert.deepEqual(layer.credentialPaths, []);
+  assert.deepEqual(layer.splitEnvTemplates, []);
   assert.deepEqual(layer.advertisedTools, ["helper tool"]);
 });
 
@@ -221,7 +221,7 @@ test("credentialPaths reject empty segments alongside traversal", () => {
   }
 });
 
-const BROKERED_ACME = {
+const LAYER_ACME = {
   id: "acme",
   install: { binary: "acmectl" },
   auth: {
@@ -237,11 +237,11 @@ test("a layer installed after boot reaches the app that booted without one", () 
     0,
     "a deployment with no DEPLOYMENT_LAYER boots empty; the layer arrives over the API afterwards",
   );
-  replaceDeploymentLayer(built.deploymentLayer, loadDeploymentLayer(layerDir({ acme: BROKERED_ACME })));
+  replaceDeploymentLayer(built.deploymentLayer, loadDeploymentLayer(layerDir({ acme: LAYER_ACME })));
   assert.equal(
     built.credentialTools.length,
     1,
-    "credential vending reads this array; a copy taken at boot would stay empty forever",
+    "credential materialization reads this array; a copy taken at boot would stay empty forever",
   );
   assert.equal(built.credentialTools[0]?.service, "acme");
 });
@@ -254,11 +254,11 @@ test("replaceDeploymentLayer reaches every holder of the runtime arrays", () => 
     runtime,
     loadDeploymentLayer(
       layerDir({
-        acme: { ...BROKERED_ACME, approvals: [{ command: "delete", decision: "deny" }] },
+        acme: { ...LAYER_ACME, approvals: [{ command: "delete", decision: "deny" }] },
       }),
     ),
   );
-  assert.equal(credentialTools.length, 1, "credential vending reads this array");
+  assert.equal(credentialTools.length, 1, "credential materialization reads this array");
   assert.equal(credentialTools[0]?.service, "acme");
   assert.equal(commandRules.length, 1, "the command policy reads this array, and already sees post-boot layers");
 });

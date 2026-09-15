@@ -29,7 +29,6 @@ export function fileMtimeEpoch(path: string): number {
   }
 }
 
-// Mirrors parseEnvLine in cli/src/util.ts — keep the two in agreement.
 function parseEnvLine(raw: string): [key: string, value: string] | undefined {
   let line = raw.trim();
   if (!line || line.startsWith("#")) return undefined;
@@ -62,6 +61,10 @@ export function readEnvFile(path: string): Record<string, string> {
     if (entry && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0])) out[entry[0]] = entry[1];
   }
   return out;
+}
+
+export function validOrgId(value: string): boolean {
+  return value.length <= 63 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(value);
 }
 
 export function sha256Hex(text: string): string {

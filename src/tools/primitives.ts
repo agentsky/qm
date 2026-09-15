@@ -183,12 +183,6 @@ export interface ToolContext extends SurfaceToolDeps {
   runtime?(request: RuntimeRequest, signal?: AbortSignal): Promise<RuntimeResult>;
   attach: AttachFiles;
   commandCredentialHandles?: readonly string[];
-  credentialExecServices?: readonly { service: string; binary: string }[];
-  credentialExec?(
-    service: string,
-    args: string[],
-    opts?: { timeoutSeconds?: number; signal?: AbortSignal },
-  ): Promise<ExecResult>;
   registerLogin?(
     service: string,
     paths: readonly CredentialPathSpec[],
@@ -422,8 +416,6 @@ export const CONTROL_UNAVAILABLE: ControlUnavailable = {
 
 export interface ToolContextDeps {
   sandbox: Sandbox;
-  credentialExecServices?: readonly { service: string; binary: string }[];
-  credentialExec?: ToolContext["credentialExec"];
   registerLogin?: ToolContext["registerLogin"];
   commandCredentials?: readonly CommandCredential[];
   provision: () => Promise<SandboxHandle>;
@@ -431,7 +423,6 @@ export interface ToolContextDeps {
   provisionResource?: (id: string) => Promise<SandboxHandle>;
   provisionOwnerAuth?: () => Promise<SandboxHandle>;
   ownerAuthCommand?: (command: string) => string;
-  scopedCommand?: (command: string) => string;
   ensureSkillTree?: (skillDir: string, sandboxId?: string) => Promise<void>;
   reach?: {
     resolveChannel(query: string): Promise<ReachResolution>;
@@ -546,8 +537,6 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   }
 
   return {
-    ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),
-    ...(deps.credentialExec ? { credentialExec: deps.credentialExec } : {}),
     ...(deps.registerLogin ? { registerLogin: deps.registerLogin } : {}),
     ...(deps.commandCredentials?.length
       ? { commandCredentialHandles: deps.commandCredentials.map((credential) => credential.handle) }
@@ -797,9 +786,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           });
         }
         return timed("exec", async () => {
-          const sandboxCommand = ownerAuth
-            ? (deps.ownerAuthCommand?.(command) ?? command)
-            : (deps.scopedCommand?.(command) ?? command);
+          const sandboxCommand = ownerAuth ? (deps.ownerAuthCommand?.(command) ?? command) : command;
           const commandHandle = Object.keys(commandEnv).length
             ? { ...handle, env: { ...handle.env, ...commandEnv } }
             : handle;
@@ -1143,12 +1130,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         for (const skillDir of skillTreeDirsInCommand(command)) await deps.ensureSkillTree(skillDir, opts?.sandboxId);
       }
       return once(
-        () =>
-          deps.backgroundBroker!.start(
-            handle,
-            deps.scopedCommand?.(command) ?? command,
-            opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
-          ),
+        () => deps.backgroundBroker!.start(handle, command, opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined),
         () => true,
       );
     },

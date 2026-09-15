@@ -80,7 +80,6 @@ and other durable state. The agent has a small, fixed tool surface; one of those
 `execute`, which runs commands in the scope's own isolated sandbox — its durable computer,
 where installed tools stay installed. The web UI and admin panel share one service; the portal and optional built-in
 auth broker share another. These modules communicate with core over its HTTP API.
-See [combined services](docs/combined-services.md) for configuration and migration;
 Slack is an optional in-process plugin that core starts
 and supervises through a direct service client.
 
@@ -88,8 +87,8 @@ The core runs TypeScript directly on Node and uses Fastify for HTTP. The Slack p
 uses Bolt; the web UI builds with Vite and renders with Lit.
 
 The core itself is generic. Everything specific to one company — org config, custom tools
-and skills, sandbox image, infrastructure — lives in a **deployment directory** that the
-[`qm` CLI](./cli/README.md) validates and deploys. Every substrate (harness, session
+and skills, sandbox image, infrastructure — lives in the Helm values and deployment layer
+you keep outside core. Every substrate (harness, session
 store, sandbox, memory) sits behind an interface. Memory can also be routed by scope to
 [external providers](./docs/memory-providers.md) while retaining the built-in notebook.
 
@@ -136,20 +135,27 @@ known limitations.
 
 ## Deploy it for your org
 
-Create an organization-owned deployment repository that depends on `@yc-software/qm`:
+QM deploys to Kubernetes with the Helm chart in [`deploy/helm/`](./deploy/helm). Point it
+at a Postgres database, the signed images the release workflow publishes to
+`ghcr.io/yc-software/qm`, and your own secret values:
 
 ```bash
-npm exec --yes --package=@yc-software/qm@latest -- \
-  qm init . --org <slug> --target <fly-or-aws>
-npm install
+helm upgrade --install qm deploy/helm \
+  --namespace qm --create-namespace \
+  --set image.tag=<release-sha> \
+  -f my-values.yaml
 ```
 
-Initialization materializes a deployment skill for an agent and walks through
-infrastructure, web sign-in, connector credentials, optional Slack access, deployment,
-and live verification — no source checkout required. Each deployment runs in the
-operator's own cloud account; initialization does not generate or enable deployment CI,
-and this repository has no production deployment workflow. See
-[`deployment.md`](./deployment.md) for the details.
+To build and push your own images from this checkout and deploy them in one step, use
+[`scripts/deploy-helm.sh`](./scripts/deploy-helm.sh) with your registry prefix:
+
+```bash
+scripts/deploy-helm.sh ghcr.io/<org>/qm
+```
+
+Each deployment runs in the operator's own cluster; this repository has no production
+deployment workflow. See [`docs/getting-started.md`](./docs/getting-started.md) for the
+prerequisites and the values you must set.
 
 ## Contributing
 
@@ -163,10 +169,10 @@ not a public issue.
 
 Choose how you want to customize QM:
 
-- **Config, tools, skills, and services:** use the deployment repository above. It
-  pins `@yc-software/qm` and uses that release's runtime images; no source copy is needed.
+- **Config, tools, skills, and services:** keep a values file and deployment layer of
+  your own and run the published release images; no source copy is needed.
 - **Changes to QM itself:** keep your own source fork, public or private. You may
-  modify any part of core, including the runtime, plugins, CLI, docs, and CI.
+  modify any part of core, including the runtime, plugins, docs, and CI.
   Contributing those changes upstream is optional.
 
 ### Create a source fork
@@ -196,29 +202,26 @@ deployment CI.
 
 ### Customize and run your source
 
-Keep deployment configuration, tools, skills, plugin images, and infrastructure in
+Keep Helm values, tools, skills, plugin images, and infrastructure in
 `deploy/layers/<org>/` in a private source fork, or in a separate private deployment
 repository when your source is public. Never commit secrets. See
-[`deploy/layers/README.md`](./deploy/layers/README.md) for initialization and layout.
+[`deploy/layers/README.md`](./deploy/layers/README.md) for the layout.
 Keep deployment data separate from core code, but change core wherever your desired
 behavior requires it.
 
-From the source checkout, install dependencies with `npm ci` and use the in-tree CLI.
-After completing the provider setup in [`deployment.md`](./deployment.md), build and
-deploy your modified services explicitly:
+From the source checkout, install dependencies with `npm ci`, then build and push your
+modified images and deploy the chart:
 
 ```bash
-node cli/bin/qm.ts check --config <deployment-dir>/qm.config.jsonc
-node cli/bin/qm.ts plan --config <deployment-dir>/qm.config.jsonc --build-from .
-node cli/bin/qm.ts up --config <deployment-dir>/qm.config.jsonc --build-from .
-node cli/bin/qm.ts check --config <deployment-dir>/qm.config.jsonc --live
+scripts/deploy-helm.sh ghcr.io/<org>/qm
+helm upgrade --install qm deploy/helm --namespace qm \
+  -f deploy/layers/<org>/values.yaml
 ```
 
-Use this checkout's CLI when changing the CLI itself. Without `--build-from`, the
-normal deployment path selects published images, so editing source alone does not
-change the deployed runtime. If you publish custom images instead, configure their
-immutable references through `imageOverrides`. Follow the provider guide for sandbox
-image builds; service builds do not replace that step.
+The chart otherwise runs the published release images, so editing source alone does not
+change the deployed runtime until you push your own and set `image.repository` and
+`image.tag`. The sandbox image is built separately — see
+[`deploy/sandbox-base/README.md`](./deploy/sandbox-base/README.md).
 
 ### Keep it current
 
@@ -228,18 +231,13 @@ them. Conflicts are expected maintenance work, not a requirement to discard
 customizations. Use `upstream-pr` only when you want to contribute a generic change;
 it prepares a clean upstream branch without private deployment data or history.
 
-For a package deployment, upgrade the exact `@yc-software/qm` dependency and lockfile,
-review contract changes and generated assets, then validate and deploy. There is no
-upstream source history to merge.
-
 ## Going deeper
 
 - [`docs/swarms.md`](./docs/swarms.md) — durable agent pools, scoped messages, and blank Modal workers
 - [`docs/model-gateway.md`](./docs/model-gateway.md) — discover and route models through a gateway
 - [`docs/getting-started.md`](./docs/getting-started.md) — first run, end to end
-- [`cli/README.md`](./cli/README.md) — the `qm` CLI and the deployment directory contract
-- [`docs/deploy-directory.md`](./docs/deploy-directory.md) — the deployment directory in full
-- [`docs/porter.md`](./docs/porter.md) — running qm on Porter
+- [`deploy/README.md`](./deploy/README.md) — the images, the Helm chart, and the deployment layer
+- [`docs/helm-per-service-secrets.md`](./docs/helm-per-service-secrets.md) — per-service secret scoping
 - [`.env.example`](./.env.example) — every knob, documented in place
 - [`plugins/`](./plugins) — the surfaces (Slack, web UI, admin, portal)
 

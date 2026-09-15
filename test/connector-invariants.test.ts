@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,7 +11,7 @@ import { createInsecureTestServer, createServer } from "../src/api/server.ts";
 import { PROVIDERS, sealOAuthState } from "../src/connectors/oauth.ts";
 import { envKey } from "../src/credentials/connector-token.ts";
 import type { TurnRequest } from "../src/types.ts";
-import { fakeSprites } from "./support/auto-fake-sprites.ts";
+import { fakeSmolmachines } from "./support/auto-fake-smolmachines.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const CATALOG_HOSTS = Object.values(PROVIDERS).flatMap((p) => p.hosts);
@@ -169,7 +169,7 @@ function turn(kind: "dm" | "channel", text: string): TurnRequest {
 }
 
 function execScriptsMention(needle: string): boolean {
-  return fakeSprites.execScripts().some((script) => script.includes(needle));
+  return fakeSmolmachines.execScripts().some((script) => script.includes(needle));
 }
 
 test("F1/F3 — a DM injects the requester's connector token; a channel injects NONE", async () => {
@@ -177,13 +177,13 @@ test("F1/F3 — a DM injects the requester's connector token; a channel injects 
   built.connectorTokens.setConnectorToken("gmail.googleapis.com", "U1", { accessToken: "u1-gmail" });
   const gmailExport = `export ${envKey("gmail.googleapis.com")}=`;
 
-  fakeSprites.reset();
+  fakeSmolmachines.reset();
   const dm = await built.app.turn(turn("dm", "!run true"));
   assert.equal(dm.status, "ok");
   assert.ok(execScriptsMention(gmailExport), "a DM must materialize the requester's own token");
   assert.ok(execScriptsMention("u1-gmail"), "the DM's exec env carries the token value");
 
-  fakeSprites.reset();
+  fakeSmolmachines.reset();
   const ch = await built.app.turn(turn("channel", "!run true"));
   assert.equal(ch.status, "ok");
   assert.ok(!execScriptsMention(gmailExport), "a channel must inject NO per-user connector token");
@@ -206,7 +206,7 @@ test("a full-toolset triggered wake materializes the owner's connector token int
   built.connectorTokens.setConnectorToken("gmail.googleapis.com", "U1", { accessToken: "u1-gmail" });
   const gmailExport = `export ${envKey("gmail.googleapis.com")}=`;
 
-  fakeSprites.reset();
+  fakeSmolmachines.reset();
   const res = await built.app.turn(wake("!run true", false));
   assert.equal(res.status, "ok");
   assert.ok(execScriptsMention(gmailExport), "a full-toolset wake materializes the owner's connector token");
@@ -217,11 +217,11 @@ test("a read-only wake never reaches the sandbox (execute stripped), so no exec 
   const built: BuiltApp = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "wake-ro-")) }));
   built.connectorTokens.setConnectorToken("gmail.googleapis.com", "U1", { accessToken: "u1-gmail" });
 
-  fakeSprites.reset();
+  fakeSmolmachines.reset();
   const res = await built.app.turn(wake("[wake] glance only", true));
   assert.equal(res.status, "ok");
   assert.ok(
-    !fakeSprites.calls.some((c) => c.method === "POST" && c.path.endsWith("/exec")),
+    !fakeSmolmachines.calls.some((c) => c.method === "POST" && c.path.endsWith("/exec")),
     "a read-only wake spins no sandbox exec",
   );
 });

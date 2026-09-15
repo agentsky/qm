@@ -58,10 +58,7 @@ async function buildEnv(): Promise<Env> {
     anthropicApiKey: requireEnv("ANTHROPIC_API_KEY"),
     judgeModel: process.env.LIVE_E2E_JUDGE_MODEL ?? "claude-haiku-4-5-20251001",
     ...(process.env.LIVE_E2E_TARGET_CHANNEL ? { targetChannel: process.env.LIVE_E2E_TARGET_CHANNEL } : {}),
-    sandbox:
-      process.env.LIVE_E2E_SANDBOX_AVAILABLE === "1" ||
-      Boolean(process.env.SPRITES_TOKEN) ||
-      Boolean(process.env.FLY_API_TOKEN),
+    sandbox: process.env.LIVE_E2E_SANDBOX_AVAILABLE === "1" || Boolean(process.env.SMOLMACHINES_TOKEN),
     actors: await resolveActors(),
     ...(twin ? { twin } : {}),
   };

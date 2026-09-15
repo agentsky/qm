@@ -39,11 +39,11 @@ import {
 } from "./lib/client.ts";
 import { sweepSlackTokenOrphans } from "./lib/orphans.ts";
 import { destroyLocalDevSandboxes } from "./lib/sandbox.ts";
-import { bestEffort, errMessage, formatAge, nowEpoch, sleep } from "./lib/util.ts";
+import { bestEffort, errMessage, formatAge, nowEpoch, sleep, validOrgId } from "./lib/util.ts";
+import { ciDown, ciUp } from "./commands/ci.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import type { BootPhaseEvent, BootResult, LeaseInfo } from "./lib/types.ts";
 import { CHILD_ORDER, EXIT } from "./lib/types.ts";
-import { validOrgId } from "../../cli/src/config.ts";
 
 function parseCli() {
   try {
@@ -82,6 +82,7 @@ const commandOptions: Record<string, readonly string[]> = {
   canary: ["json"],
   logs: ["follow"],
   doctor: ["json", "fix", "no-slack"],
+  ci: [],
 };
 
 const devServiceNames = [...CHILD_ORDER, "web-ui"];
@@ -93,7 +94,7 @@ if (allowedOptions) {
     console.error(`dev: ${command} does not support ${unsupported.rawName}`);
     process.exit(EXIT.usage);
   }
-  if (command !== "restart" && command !== "logs" && positionals.length > 1) {
+  if (!["restart", "logs", "ci"].includes(command) && positionals.length > 1) {
     console.error(`dev: unexpected argument: ${JSON.stringify(positionals[1])}`);
     process.exit(EXIT.usage);
   }
@@ -245,7 +246,7 @@ async function bootOnSlot(slot: string, worktree: string, branch: string): Promi
         branch,
         callerEnv,
         watch: !opts["no-watch"] && callerEnv.DEV_INSTANCE_WATCH !== "0",
-        sandbox: opts.sandbox as "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37" | "auto",
+        sandbox: opts.sandbox as "local" | "smolmachines" | "e2b" | "agent37" | "auto",
         canaryChannel,
         strict: opts.strict,
         slack: withSlack,
@@ -643,9 +644,14 @@ async function main(): Promise<number> {
       return await cmdLogs();
     case "doctor":
       return await runDoctor({ json: opts.json, fix: opts.fix, store, slack: withSlack });
+    case "ci":
+      if (positionals[1] === "up") return await ciUp();
+      if (positionals[1] === "down") return await ciDown();
+      console.error("usage: dev ci up|down");
+      return EXIT.usage;
     default:
       console.error(
-        "usage: dev [up|down|status|restart|canary|logs|doctor] [--json] [--force] [--rotate] [--strict] [--sandbox local|sprites|smolmachines|e2b|porter|agent37|auto] [--no-slack] [--no-watch] [--org id] [--fix]",
+        "usage: dev [up|down|status|restart|canary|logs|doctor|ci up|ci down] [--json] [--force] [--rotate] [--strict] [--sandbox local|smolmachines|e2b|agent37|auto] [--no-slack] [--no-watch] [--org id] [--fix]",
       );
       return EXIT.usage;
   }

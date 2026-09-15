@@ -31,6 +31,7 @@ export interface FakeSmolmachines {
 }
 
 export const FAKE_SMOLMACHINES_TOKEN = "test-token";
+const API_ORIGIN = "https://api.smolmachines.com";
 
 export function installFakeSmolmachines(): FakeSmolmachines {
   const root = mkdtempSync(join(tmpdir(), "fake-smol-"));
@@ -136,8 +137,12 @@ export function installFakeSmolmachines(): FakeSmolmachines {
       const hostPath = abs.replace(/^\/root/, m.home);
       if (method === "PUT") {
         m.state = "Running";
-        mkdirSync(dirname(hostPath), { recursive: true });
-        writeFileSync(hostPath, toBuf(init?.body));
+        try {
+          mkdirSync(dirname(hostPath), { recursive: true });
+          writeFileSync(hostPath, toBuf(init?.body));
+        } catch (e) {
+          return new Response(String(e), { status: 409 });
+        }
         return Response.json({ path: abs, size: toBuf(init?.body).length });
       }
       if (method === "GET") {
@@ -200,4 +205,20 @@ export function installFakeSmolmachines(): FakeSmolmachines {
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+let globalFake: FakeSmolmachines | null = null;
+
+export function installGlobalFakeSmolmachines(): FakeSmolmachines {
+  if (globalFake) return globalFake;
+  const fake = installFakeSmolmachines();
+  const realFetch = globalThis.fetch;
+  const patched: typeof fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    if (url.origin === API_ORIGIN) return fake.fetchImpl(input, init);
+    return realFetch(input, init);
+  };
+  (globalThis as { fetch: typeof fetch }).fetch = patched;
+  globalFake = fake;
+  return fake;
 }

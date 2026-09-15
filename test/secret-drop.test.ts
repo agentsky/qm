@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";

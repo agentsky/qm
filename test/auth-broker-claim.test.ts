@@ -1,6 +1,6 @@
 import type { BrokerSessionStore } from "../src/auth/broker-sessions.ts";
 import { mintPortalIdentity } from "../src/auth/portal-identity.ts";
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

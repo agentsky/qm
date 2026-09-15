@@ -95,16 +95,14 @@ printf 'git cli ok: git=%s gh=%s glab=%s git_version=%s gh_version=%s glab_versi
 export async function main(): Promise<void> {
   const [{ loadConfig }, { buildApp }] = await Promise.all([import("../src/config.ts"), import("../src/wiring.ts")]);
   const config = loadConfig();
-  const actorProvided = Boolean(process.env.GIT_CLI_SMOKE_ACTOR_ID);
   const actorId = process.env.GIT_CLI_SMOKE_ACTOR_ID ?? `qm-git-cli-smoke-${Date.now()}`;
   const requireGlab = process.env.GIT_CLI_SMOKE_REQUIRE_GLAB === "1";
   const requireGhAuth = process.env.GIT_CLI_SMOKE_REQUIRE_GH_AUTH === "1";
   const requireGlabAuth = process.env.GIT_CLI_SMOKE_REQUIRE_GLAB_AUTH === "1";
 
-  if (!actorProvided) process.env.GIT_CLI_SMOKE_DESTROY = process.env.GIT_CLI_SMOKE_DESTROY ?? "1";
-
   const built = buildApp({
     ...config,
+    sandboxBackend: "local",
     dataDir: process.env.DATA_DIR ?? mkdtempSync(join(tmpdir(), "qm-git-cli-smoke-")),
     harness: "mock",
     sessionStore: "memory",
@@ -126,14 +124,6 @@ export async function main(): Promise<void> {
     console.log(result.reply);
   } finally {
     await built.runtime.stop();
-    if (process.env.GIT_CLI_SMOKE_DESTROY === "1" && process.env.SPRITES_TOKEN) {
-      const [{ SpritesClient }, { sandboxScopeName }] = await Promise.all([
-        import("@fly/sprites"),
-        import("../src/sandbox/exec-sandbox-base.ts"),
-      ]);
-      const name = sandboxScopeName(process.env.SPRITES_NAME_PREFIX ?? "qm", `personal:${actorId}`);
-      await new SpritesClient(process.env.SPRITES_TOKEN).deleteSprite(name).catch(() => {});
-    }
   }
 }
 

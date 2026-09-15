@@ -30,7 +30,7 @@ target only; the scrub steps below run in every case.
   cross-repo PR.
 - A standalone source fork: assume it may hold private material even if
   `deploy/layers/` looks empty, and read "Pushing from a private fork" below.
-- A package deployment or unrelated repository: prepare the contribution in a separate
+- An unrelated repository: prepare the contribution in a separate
   clean upstream checkout; never push its history to upstream.
 
 Judge by where `origin` points, not by the repository's name. A repository named
@@ -47,8 +47,8 @@ material belongs in the layer or private deployment repository, while source beh
 may remain a local core modification.
 
 A change that is generic in substance but written against org-specific fixtures needs its
-fixtures rewritten first. Model them on the account-neutral fixtures under `deploy/stacks/`
-rather than inventing values from your own deployment.
+fixtures rewritten first. Model them on the account-neutral values in
+`deploy/helm/values.yaml` rather than inventing values from your own deployment.
 
 ## Start from a clean tree and a clean branch
 
@@ -110,10 +110,11 @@ change, which is why the pattern matches only paths inside an organization's
 subdirectory.
 
 **2. No private organization identifiers in content, messages, or authorship.** Build the
-term list from the private deployment and local core changes, wherever they live: `qm.config.jsonc` has the org slug and public URL host,
-`.env.example` has the computed secret names, `.env` has the secret values,
-`slack-app-manifest.yml` has workspace and app names, `infra/terraform.tfvars` has cloud
-account and repository coordinates, and `sandbox/` has internal tool and system names. Add
+term list from the private deployment and local core changes, wherever they live: the
+Helm values overlay has the org slug, public URL host, registry coordinates, and secret
+names; local secret files have the values;
+`slack-app-manifest.yml` has workspace and app names; and `sandbox/` has internal tool and
+system names. Add
 your email domains, teammates' names, and any customer or partner names.
 
 Authorship is scanned because a clone configured with an internal `user.email` stamps it on

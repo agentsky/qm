@@ -3,23 +3,26 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpritesSandbox } from "../src/sandbox/sprites-sandbox.ts";
+import { createSmolmachinesSandbox } from "../src/sandbox/smolmachines-sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 import { nonInteractiveShellPrefix, NONINTERACTIVE_ENV } from "../src/sandbox/sandbox-env.ts";
-import { installFakeSprites, type FakeSprites } from "./support/fake-sprites.ts";
+import {
+  installFakeSmolmachines,
+  FAKE_SMOLMACHINES_TOKEN,
+  type FakeSmolmachines,
+} from "./support/fake-smolmachines.ts";
 
-let ff: FakeSprites;
+let ff: FakeSmolmachines;
 before(() => {
-  ff = installFakeSprites();
+  ff = installFakeSmolmachines();
 });
 after(() => ff.cleanup());
 
-function spritesHandle(env?: Record<string, string>) {
+function smolHandle(env?: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "noninteractive-"));
-  const sandbox = createSpritesSandbox(createLocalWorkspaceStore(dir), {
-    token: "test-token",
-    client: ff.client,
+  const sandbox = createSmolmachinesSandbox(createLocalWorkspaceStore(dir), {
+    token: FAKE_SMOLMACHINES_TOKEN,
     fetchImpl: ff.fetchImpl,
   });
   const layers = [{ scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" as const }];
@@ -36,7 +39,7 @@ test("the shell prefix detaches stdin and exports every non-interactive default"
 });
 
 test("a command reading stdin gets EOF instead of burning the timeout", async () => {
-  const { sandbox, layers } = spritesHandle();
+  const { sandbox, layers } = smolHandle();
   const handle = await sandbox.provision(layers);
   const r = await sandbox.run(handle, "cat", { timeoutMs: 3000 });
   assert.equal(r.timedOut, false);
@@ -45,7 +48,7 @@ test("a command reading stdin gets EOF instead of burning the timeout", async ()
 });
 
 test("pager/frontend/terminal-prompt defaults are present in the command environment", async () => {
-  const { sandbox, layers } = spritesHandle();
+  const { sandbox, layers } = smolHandle();
   const handle = await sandbox.provision(layers);
   const r = await sandbox.run(
     handle,
@@ -55,7 +58,7 @@ test("pager/frontend/terminal-prompt defaults are present in the command environ
 });
 
 test("an explicit per-turn env value wins over the non-interactive default", async () => {
-  const { sandbox, layers, env } = spritesHandle({ PAGER: "less" });
+  const { sandbox, layers, env } = smolHandle({ PAGER: "less" });
   const handle = await sandbox.provision(layers, env ? { env } : undefined);
   const r = await sandbox.run(handle, 'printf "%s" "$PAGER"');
   assert.equal(r.stdout, "less");

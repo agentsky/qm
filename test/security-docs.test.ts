@@ -26,13 +26,12 @@ test("the public threat model covers the documented material limitations", () =>
     "Admins can read sensitive content",
     "Durable data can outlive user expectations",
     "Published-app capability links are bearer authorization",
-    "Portal sessions have residual risk",
+    "Signed identity assertions have residual risk",
     "Some model-provider paths bypass the intended gateway",
   ]) {
     assert.ok(security.includes(limitation), `SECURITY.md includes ${limitation}`);
   }
   assert.match(security, /visitors outside\s+the organization/);
   assert.doesNotMatch(security, /signature is not verified/);
-  assert.match(security, /eight\s+hours and renews on use/);
   assert.match(security, /not exhaustive/);
 });

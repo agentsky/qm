@@ -1,16 +1,15 @@
 # Runtime upgrade compatibility
 
-Pin the runtime source or image digest and deployment CLI together. Run migrations
+Pin the runtime image digest and the Helm chart version together. Run migrations
 before serving traffic, then qualify that exact candidate against an isolated copy
-of the existing database. Keep the previous images and deployment configuration
+of the existing database. Keep the previous images and values files
 available until the new revision has passed operational checks.
 
 ## Configuration changes
 
-- `qm sandbox publish` and the `sandbox.image` runtime pin are retired.
-  `qm sandbox build` remains available for validating local layer builds;
-  `sandbox.baseImage` identifies their build input. Supply sandbox tools through
-  deployment layers and configure the selected backend through its supported
+- Runtime sandbox image pins are retired. Build the sandbox images from
+  `deploy/sandbox-base/` and `deploy/sandbox-local/`, supply sandbox tools through
+  deployment layers, and configure the selected backend through its supported
   settings.
 - `SANDBOX_SECONDARY_BACKEND` is retired. `SANDBOX_BACKEND` selects the primary
   backend; additional configured backends become available through their

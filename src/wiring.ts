@@ -16,7 +16,6 @@ import {
 } from "./sandbox/sandbox-resources.ts";
 import { createModelVerifier, type ModelVerifier } from "./model/model-verification.ts";
 import type { probeModel } from "./harness/pi-harness.ts";
-import { createAwsRoleBroker, type AwsRoleBroker } from "./auth/aws-role-broker.ts";
 import type { SessionShare, SessionShareStore } from "./sessions/session-share.ts";
 import { createModelOverlayStore, type ModelOverlayStore } from "./model/model-overlay-store.ts";
 import { mkdirSync } from "node:fs";
@@ -139,9 +138,6 @@ import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./dep
 import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
 import { createDockerDeployProvider } from "./deploy/docker-deploy-provider.ts";
-import { createAwsDeployProvider, type StoredDeployBody } from "./deploy/aws-deploy-provider.ts";
-import { createFlyDeployProvider } from "./deploy/fly-deploy-provider.ts";
-import { createPorterDeployProvider, type StoredPorterDeployBody } from "./deploy/porter-deploy-provider.ts";
 import type { DeployProvider } from "./deploy/deploy-provider.ts";
 import { createDeployService } from "./deploy/deploy-service.ts";
 import {
@@ -174,9 +170,7 @@ import {
 } from "./files/durable-byte-store.ts";
 import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/file-artifact-store.ts";
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
-import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
 import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
-import { createSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
 import { createSmolmachinesSandbox } from "./sandbox/smolmachines-sandbox.ts";
 import { createAgent37Sandbox } from "./sandbox/agent37-sandbox.ts";
 import { createE2bSandbox, type StoredE2bSandbox } from "./sandbox/e2b-sandbox.ts";
@@ -184,7 +178,6 @@ import { createSdkE2bClient } from "./sandbox/e2b-client.ts";
 import { createS3SnapshotStore } from "./sandbox/home-snapshot.ts";
 import { createModalSandbox, type StoredModalSandbox } from "./sandbox/modal-sandbox.ts";
 import { createSdkModalClient } from "./sandbox/modal-client.ts";
-import { createPorterSandbox } from "./sandbox/porter-sandbox.ts";
 import {
   createSandboxRouter,
   ROUTE_CACHE_TTL_MS,
@@ -194,11 +187,7 @@ import {
 import { createSandboxMigrationRunner, type SandboxMigrationRunner } from "./sandbox/sandbox-migration-runner.ts";
 import { effectiveEgressEnforcement, type Sandbox } from "./sandbox/sandbox.ts";
 import { withOperatorTokenFallback } from "./credentials/connector-token.ts";
-import {
-  createAwsSecretsManagerSource,
-  createEnvSecretSource,
-  createLayeredSecretSource,
-} from "./credentials/secret-source.ts";
+import { createEnvSecretSource } from "./credentials/secret-source.ts";
 import {
   createKeychain,
   type ConnectorTokenStore,
@@ -288,7 +277,6 @@ import {
   createPostgresInstanceRegistry,
   type InstanceRegistry,
 } from "./runs/instance-registry.ts";
-import { createEcsTaskProtection, type TaskProtection } from "./runs/task-protection.ts";
 import { createDrainController, type DrainController } from "./runs/drain.ts";
 import { createReaper, REAPER_LEASE_KEY, type Reaper } from "./runs/reaper.ts";
 import { createSweeper, type Sweeper } from "./util/sweeper.ts";
@@ -353,7 +341,6 @@ import {
   emptyDeploymentLayer,
   loadDeploymentLayer,
   type LayerCredentialTool,
-  type BrokeredLayerTool,
   type DeploymentLayerRuntime,
 } from "./deployment/load-layer.ts";
 import {
@@ -408,7 +395,6 @@ export interface BuiltApp {
   screenSecurity?: SecurityScreenProbe;
   deploymentLayer: DeploymentLayerRuntime;
   credentialTools: readonly LayerCredentialTool[];
-  brokeredTools: readonly BrokeredLayerTool[];
   deploymentLayerStore: DeploymentLayerStore;
   deploymentLayerReady: Promise<unknown>;
   deploymentLayerRefresh: Sweeper;
@@ -495,7 +481,6 @@ export function buildApp(
   config: Config,
   overrides: {
     securityScreener?: SecurityScreener;
-    credentialBrokers?: Record<string, AwsRoleBroker>;
     modelCredentialFetch?: typeof fetch;
     modelVerificationProbe?: typeof probeModel;
   } = {},
@@ -634,7 +619,6 @@ export function buildApp(
     : emptyDeploymentLayer();
   const layerSkillsDir = config.deploymentLayerDir ? resolve(deploymentLayer.dir, "skills") : undefined;
   const credentialTools = deploymentLayer.credentialTools;
-  const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
   const auditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : createAuditLog();
   const deploymentLayerStore = createDeploymentLayerStore({
@@ -765,18 +749,6 @@ export function buildApp(
       ...config.localSandbox,
       onError: sandboxOnError,
     });
-  const buildSprites = (): Sandbox =>
-    createSpritesSandbox(workspace, {
-      ...config.spritesSandbox,
-      blobTransfer,
-      extraTools: deploymentLayer.advertisedTools,
-      credentialPaths: deploymentLayer.credentialPaths,
-      layerToolFiles: () => deploymentLayer.installFiles,
-      ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
-      ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
-      ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
-      onError: sandboxOnError,
-    });
   const buildSmolmachines = (): Sandbox =>
     createSmolmachinesSandbox(workspace, {
       ...config.smolmachinesSandbox,
@@ -791,7 +763,6 @@ export function buildApp(
     });
   const e2bBodies = artifactMap<StoredE2bSandbox>("e2b_sandbox_bodies");
   const modalBodies = artifactMap<StoredModalSandbox>("modal_sandbox_bodies");
-  const awsBodies = artifactMap<StoredMicrovm>("aws_sandbox_bodies");
   const buildE2b = (): Sandbox => {
     const e2b = config.e2bSandbox;
     if (!e2b.apiKey) throw new Error("SANDBOX_BACKEND=e2b requires E2B_API_KEY");
@@ -881,42 +852,11 @@ export function buildApp(
       ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
       onError: sandboxOnError,
     });
-  const buildAws = (): Sandbox => {
-    if (!config.awsSandbox.s3Bucket) throw new Error("SANDBOX_BACKEND=aws requires AWS_SANDBOX_S3_BUCKET");
-    return createAwsSandbox(workspace, {
-      ...config.awsSandbox,
-      s3Bucket: config.awsSandbox.s3Bucket,
-      advisoryLock,
-      extraTools: deploymentLayer.advertisedTools,
-      credentialPaths: deploymentLayer.credentialPaths,
-      blobTransfer,
-      ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
-      ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
-      ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
-      store: awsBodies,
-      onError: sandboxOnError,
-    });
-  };
-  const buildPorter = (): Sandbox =>
-    createPorterSandbox(workspace, {
-      ...config.porterSandbox,
-      advisoryLock,
-      blobTransfer,
-      extraTools: deploymentLayer.advertisedTools,
-      credentialPaths: deploymentLayer.credentialPaths,
-      ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
-      ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
-      ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
-      onError: sandboxOnError,
-    });
   const buildBackend: Record<Config["sandboxBackend"], () => Sandbox> = {
     local: buildLocal,
-    sprites: buildSprites,
     smolmachines: buildSmolmachines,
     e2b: buildE2b,
     modal: buildModal,
-    aws: buildAws,
-    porter: buildPorter,
     agent37: buildAgent37,
   };
   const enabledBackends = new Set(enabledSandboxBackends(config));
@@ -932,11 +872,10 @@ export function buildApp(
     rollout: artifactMap<SandboxResourceRollout>("sandbox_resource_rollout"),
     legacyScopes: async () => (await sessions.distinctScopes()).map((scope) => scope.scopeId),
     legacySandboxes: async () => {
-      const [e2b, modal, aws] = await Promise.all([e2bBodies.entries(), modalBodies.entries(), awsBodies.entries()]);
+      const [e2b, modal] = await Promise.all([e2bBodies.entries(), modalBodies.entries()]);
       return [
         ...e2b.map(([scopeId, body]) => ({ scopeId, backend: "e2b" as const, machineId: body.sandboxId })),
         ...modal.map(([scopeId, body]) => ({ scopeId, backend: "modal" as const, machineId: body.sandboxId })),
-        ...aws.map(([scopeId, body]) => ({ scopeId, backend: "aws" as const, machineId: body.microvmId })),
       ];
     },
     records: artifactMap<SandboxResource>("sandbox_resources"),
@@ -1007,13 +946,7 @@ export function buildApp(
     withLegacyMutation: (scope, action) => sandboxResources.withLegacyMutation(scope, action),
     hasLiveWork: async (scope) => !!processes && (await processes.liveByScope(scope)).length > 0,
   });
-  const secretSource =
-    config.secretsBackend === "aws"
-      ? createLayeredSecretSource(
-          createEnvSecretSource(),
-          createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
-        )
-      : createEnvSecretSource();
+  const secretSource = createEnvSecretSource();
   const resolveClient: OAuthClientResolver = createConnectorClientResolver({
     reader: configStore,
     orgScopeId: (o) => scopeId("org", o),
@@ -1363,30 +1296,7 @@ export function buildApp(
         : {}),
     },
   });
-  const buildAwsDeploy = (): DeployProvider =>
-    createAwsDeployProvider({
-      ...config.awsDeploy,
-      ...(!config.awsDeploy.dataBucket && config.awsSandbox.s3Bucket ? { dataBucket: config.awsSandbox.s3Bucket } : {}),
-      advisoryLock,
-      store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
-    });
-  const buildDeployProvider: Record<Config["deployProvider"], () => DeployProvider> = {
-    aws: buildAwsDeploy,
-    docker: createDockerDeployProvider,
-    fly: () => createFlyDeployProvider(config.flyDeploy),
-    porter: () =>
-      createPorterDeployProvider({
-        ...config.porterDeploy,
-        advisoryLock,
-        store: artifactMap<StoredPorterDeployBody>("porter_deploy_bodies"),
-      }),
-  };
-  const deployProvider: DeployProvider = buildDeployProvider[config.deployProvider]();
-  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
-    console.warn(
-      "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",
-    );
-  }
+  const deployProvider: DeployProvider = createDockerDeployProvider();
   const approvals = artifactMap<PendingApprovalRecord>("approvals");
   const adminGrantPersist = config.databaseUrl
     ? createPostgresAdminGrantStore(config.databaseUrl)
@@ -1531,23 +1441,6 @@ export function buildApp(
       shadow: config.securityScreenProxy!.shadow,
     });
   }
-  const layerEnv = config.layerEnv ?? {};
-  const layerBrokerCache = new Map<string, AwsRoleBroker>();
-  const layerBrokerFor = (tool: BrokeredLayerTool): AwsRoleBroker | undefined => {
-    const override = overrides.credentialBrokers?.[tool.service];
-    if (override) return override;
-    const roleArn = layerEnv[tool.broker.roleArnEnv];
-    if (!roleArn) return undefined;
-    const region = (tool.broker.regionEnv ? layerEnv[tool.broker.regionEnv] : undefined) ?? tool.broker.region;
-    if (!region) return undefined;
-    const key = JSON.stringify([roleArn, region, tool.broker.sessionActions]);
-    let broker = layerBrokerCache.get(key);
-    if (!broker) {
-      broker = createAwsRoleBroker({ roleArn, region, sessionActions: tool.broker.sessionActions });
-      layerBrokerCache.set(key, broker);
-    }
-    return broker;
-  };
   const orchestratorDeps: OrchestratorDeps = {
     refreshModels,
     identity,
@@ -1630,9 +1523,7 @@ export function buildApp(
     ...(config.eagerProvisionEnabled ? { eagerProvision: true } : {}),
     environments,
     credentialTools,
-    brokeredTools,
     deploymentLayer,
-    layerBrokerFor,
   };
   const orchestrator = createOrchestrator(orchestratorDeps);
 
@@ -2043,12 +1934,8 @@ export function buildApp(
           startedAt: Date.now(),
         })
       : createNoopInstanceRegistry();
-  const taskProtection: TaskProtection | null =
-    config.ecsTaskProtection && config.ecsAgentUri ? createEcsTaskProtection(config.ecsAgentUri) : null;
   const drain: DrainController = createDrainController({
     registry: instanceRegistry,
-    protection: taskProtection,
-    busy: () => workers.some((w) => w.busy()),
   });
   const workers: Worker[] = Array.from({ length: Math.max(1, config.workers) }, () =>
     createWorker({
@@ -2060,7 +1947,6 @@ export function buildApp(
       errors,
       pollMs: 250,
       canClaim: () => drain.canClaim(),
-      onClaimed: () => drain.noteBusy(),
     }),
   );
   const processReaper: ProcessReaper | null = processes
@@ -2166,7 +2052,6 @@ export function buildApp(
     deploymentLayer,
     deploymentLayerStore,
     credentialTools,
-    brokeredTools,
     deploymentLayerReady,
     deploymentLayerRefresh,
     sessions,
@@ -2324,8 +2209,8 @@ export function serverDeps(
     credentialServices: () => built.credentialTools.map((tool) => tool.service),
     deploymentLayer: built.deploymentLayerStore,
     deployDialTimeoutMs: config.deployDialTimeoutMs,
-    ...(config.awsDeploy.appsDomain ? { deployAppsDomain: config.awsDeploy.appsDomain } : {}),
-    ...(config.awsDeploy.gateSecret ? { deployGateSecret: config.awsDeploy.gateSecret } : {}),
+    ...(config.deployAppsDomain ? { deployAppsDomain: config.deployAppsDomain } : {}),
+    ...(config.deployGateSecret ? { deployGateSecret: config.deployGateSecret } : {}),
     ...(config.deployAppsSessionSecret ? { deployAppsSessionSecret: config.deployAppsSessionSecret } : {}),
     ...(config.deployAppsLoginUrl ? { deployAppsLoginUrl: config.deployAppsLoginUrl } : {}),
     scheduler: built.scheduler,

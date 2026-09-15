@@ -1,6 +1,5 @@
 import type { RuntimeService } from "../../harness/runtime-types.ts";
 import type { SandboxResources } from "../../sandbox/sandbox-resources.ts";
-import type { AwsRoleBroker } from "../../auth/aws-role-broker.ts";
 import type {
   CommandApprovalGrant,
   Conversation,
@@ -59,7 +58,7 @@ import type { AdvisoryLock } from "../../persistence/advisory-lock.ts";
 import type { SkillStore } from "../../skills/skill-store.ts";
 import type { OAuthClientResolver } from "../../connectors/oauth.ts";
 import type { SkillBundleStore } from "../../skills/skill-bundle-store.ts";
-import type { BrokeredLayerTool, LayerCredentialTool, DeploymentLayerRuntime } from "../../deployment/load-layer.ts";
+import type { LayerCredentialTool, DeploymentLayerRuntime } from "../../deployment/load-layer.ts";
 import type { FileArtifactStore } from "../../files/file-artifact-store.ts";
 import type { DeployService } from "../../deploy/deploy-service.ts";
 import type { AclStore } from "../../acl/acl-store.ts";
@@ -188,8 +187,6 @@ export interface OrchestratorDeps {
   eagerProvision?: boolean;
   environments?: EnvironmentStore;
   credentialTools?: readonly LayerCredentialTool[];
-  layerBrokerFor?: (tool: BrokeredLayerTool) => AwsRoleBroker | undefined;
-  brokeredTools?: readonly BrokeredLayerTool[];
   deploymentLayer?: DeploymentLayerRuntime;
   surfaceContext?: SurfaceContextPuller;
   surfaceSearch?: SurfaceSearchStore;

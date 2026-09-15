@@ -14,15 +14,6 @@ interface ToolAuthDescriptor {
   reauth: string;
   credentialPaths?: ToolCredentialPath[];
   splitEnv?: Record<string, string>;
-  broker?: ToolCredentialBroker;
-}
-
-export interface ToolCredentialBroker {
-  kind: "aws-role";
-  roleArnEnv: string;
-  regionEnv?: string;
-  region?: string;
-  sessionActions: string[];
 }
 
 export interface ToolCredentialPath {
@@ -211,11 +202,6 @@ export function parseToolDescriptor(raw: string, sourcePath: string): ToolDescri
     }
   }
   const binary = out.install?.binary ?? out.id;
-  if (out.auth?.broker && !POSIX_FUNCTION_NAME_RE.test(binary)) {
-    throw new Error(
-      `${sourcePath}: a brokered tool's binary ${JSON.stringify(binary)} must match ${POSIX_FUNCTION_NAME_RE.source} — vended credentials wrap it in a shell function, and not every sandbox shell accepts hyphenated function names`,
-    );
-  }
   for (const [i, approval] of (out.approvals ?? []).entries()) {
     const compiled = compileApproval(binary, approval);
     try {
@@ -289,46 +275,6 @@ function parseAuth(raw: unknown, sourcePath: string): ToolAuthDescriptor {
     }
     out.splitEnv = map;
   }
-  if (a["broker"] !== undefined) out.broker = parseBroker(a["broker"], sourcePath);
-  return out;
-}
-
-function parseBroker(raw: unknown, sourcePath: string): ToolCredentialBroker {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error(`${sourcePath}: "auth.broker" must be an object`);
-  }
-  const b = raw as Record<string, unknown>;
-  if (b["kind"] !== "aws-role") throw new Error(`${sourcePath}: "auth.broker.kind" must be "aws-role"`);
-  if (typeof b["roleArnEnv"] !== "string" || !SPLIT_ENV_KEY_RE.test(b["roleArnEnv"])) {
-    throw new Error(`${sourcePath}: "auth.broker.roleArnEnv" is required and must match ${SPLIT_ENV_KEY_RE.source}`);
-  }
-  const out: ToolCredentialBroker = { kind: "aws-role", roleArnEnv: b["roleArnEnv"], sessionActions: [] };
-  if (b["regionEnv"] !== undefined) {
-    if (typeof b["regionEnv"] !== "string" || !SPLIT_ENV_KEY_RE.test(b["regionEnv"])) {
-      throw new Error(`${sourcePath}: "auth.broker.regionEnv" must match ${SPLIT_ENV_KEY_RE.source}`);
-    }
-    out.regionEnv = b["regionEnv"];
-  }
-  if (b["region"] !== undefined) {
-    if (typeof b["region"] !== "string" || !b["region"].trim()) {
-      throw new Error(`${sourcePath}: "auth.broker.region" must be a non-empty string`);
-    }
-    out.region = b["region"];
-  }
-  if (out.region === undefined && out.regionEnv === undefined) {
-    throw new Error(
-      `${sourcePath}: "auth.broker" needs "region" or "regionEnv" — the vended credentials carry a region`,
-    );
-  }
-  const actions = b["sessionActions"];
-  if (
-    !Array.isArray(actions) ||
-    actions.length === 0 ||
-    actions.some((entry) => typeof entry !== "string" || !entry.trim())
-  ) {
-    throw new Error(`${sourcePath}: "auth.broker.sessionActions" must be a non-empty array of IAM action strings`);
-  }
-  out.sessionActions = actions as string[];
   return out;
 }
 
@@ -364,7 +310,6 @@ function parseApprovals(raw: unknown, sourcePath: string): ToolApproval[] {
 
 const TOOL_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SPLIT_ENV_KEY_RE = /^[A-Z][A-Z0-9_]*$/;
-const POSIX_FUNCTION_NAME_RE = /^[a-z_][a-z0-9_]*$/;
 
 const MAX_APPROVAL_PATTERN_LEN = 256;
 function approvalPatternTooSlow(pattern: string): boolean {

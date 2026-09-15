@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,8 +23,8 @@ test("background output selects the recorded private resource and fails closed w
   const built = buildApp(testConfig({ sandboxResourcesEnabled: true }));
   try {
     const root = await built.app.turn(dm("Start", "resource-output"));
-    const resource = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Worker");
-    const fallback = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Default");
+    const resource = await built.sandboxResources.create("U1", "personal:U1", "smolmachines", "Worker");
+    const fallback = await built.sandboxResources.create("U1", "personal:U1", "smolmachines", "Default");
     await built.sandboxResources.setDefault("U1", "personal:U1", fallback.id);
     await built.processes!.register({ ...registryRow("private-output", "resource-output"), sandboxId: resource.id });
     let selected: string | undefined;

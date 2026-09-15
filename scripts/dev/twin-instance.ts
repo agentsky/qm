@@ -25,7 +25,7 @@ async function up(): Promise<void> {
       .join("\n") + "\n",
   );
 
-  const boot = spawnSync(process.execPath, [join(root, "cli/bin/qm.ts"), "dev", "--ci", "up"], {
+  const boot = spawnSync(process.execPath, [join(root, "scripts/dev/cli.ts"), "ci", "up"], {
     cwd: root,
     env: { ...process.env, ...bootEnv },
     stdio: "inherit",
@@ -64,7 +64,7 @@ async function down(): Promise<void> {
       }
     }
   }
-  spawnSync(process.execPath, [join(root, "cli/bin/qm.ts"), "dev", "--ci", "down"], { cwd: root, stdio: "inherit" });
+  spawnSync(process.execPath, [join(root, "scripts/dev/cli.ts"), "ci", "down"], { cwd: root, stdio: "inherit" });
   if (saved.ARGA_TWIN_RUN_ID && process.env.ARGA_API_KEY) {
     await teardownTwinEnvironment(process.env.ARGA_API_KEY, saved.ARGA_TWIN_RUN_ID).catch((err: Error) =>
       console.error(`twin teardown failed (it expires at TTL anyway): ${err.message}`),

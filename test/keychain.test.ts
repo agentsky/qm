@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { test, describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -22,7 +22,7 @@ import { envKey } from "../src/credentials/connector-token.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
-import { fakeSprites } from "./support/auto-fake-sprites.ts";
+import { fakeSmolmachines } from "./support/auto-fake-smolmachines.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const KEY = deriveConnectorKey("keychain-test-key");
@@ -1532,7 +1532,7 @@ function channelTurn(
 }
 
 function execScriptsMention(needle: string, since = 0): boolean {
-  return fakeSprites
+  return fakeSmolmachines
     .execScripts()
     .slice(since)
     .some((script) => script.includes(needle));
@@ -1564,7 +1564,7 @@ test("turn e2e: prompt lists exact handles and keychain env credentials are neve
   assert.match(sys.reply ?? "", /no grant for this conversation/);
   assert.ok(!(sys.reply ?? "").includes("ghp_e2e"), "prompt never carries the secret");
 
-  let mark = fakeSprites.execScripts().length;
+  let mark = fakeSmolmachines.execScripts().length;
   assert.equal((await built.app.turn(channelTurn("!run true", "U_ASKER", audience))).status, "ok");
   assert.ok(!execScriptsMention("ghp_e2e", mark), "no grant → no secret in the channel sandbox");
 
@@ -1575,7 +1575,7 @@ test("turn e2e: prompt lists exact handles and keychain env credentials are neve
     mode: "standing",
     purpose: "use my gh here for repo work",
   });
-  mark = fakeSprites.execScripts().length;
+  mark = fakeSmolmachines.execScripts().length;
   assert.equal((await built.app.turn(channelTurn("!run true", "U_ASKER", audience))).status, "ok");
   assert.ok(!execScriptsMention("export GITHUB_TOKEN=", mark), "standing grants are not ambient");
   assert.ok(!execScriptsMention("ghp_e2e", mark), "an unrequested command never receives the secret");
@@ -1584,7 +1584,7 @@ test("turn e2e: prompt lists exact handles and keychain env credentials are neve
   assert.match(sys2.reply ?? "", /STANDING grant .*use my gh here for repo work/);
   assert.match(sys2.reply ?? "", new RegExp(`kc_${cred.id.slice(0, 12)}`));
 
-  mark = fakeSprites.execScripts().length;
+  mark = fakeSmolmachines.execScripts().length;
   const dm: TurnRequest = {
     surface: "test",
     actor: { externalId: "U_OWNER" },

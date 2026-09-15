@@ -108,7 +108,7 @@ export interface BootSpec {
   branch: string;
   callerEnv: Record<string, string>;
   watch: boolean;
-  sandbox: "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37" | "auto";
+  sandbox: "local" | "smolmachines" | "e2b" | "agent37" | "auto";
   canaryChannel?: string;
   strict: boolean;
   slack?: boolean;

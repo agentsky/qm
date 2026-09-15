@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { test, describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -29,7 +29,7 @@ import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
-import { fakeSprites } from "./support/auto-fake-sprites.ts";
+import { fakeSmolmachines } from "./support/auto-fake-smolmachines.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const KEY = deriveConnectorKey("keychain-ask-test-key");
@@ -937,7 +937,7 @@ test("turn e2e: trigger-fired turns mint `triggered` into the capability token; 
   // The recorded script is the backend's OUTER `sh -c` wrapper, so the export's single quotes
   // arrive shell-escaped — match the token's own alphabet instead of the quoting around it.
   const extractToken = (since: number): CapabilityClaims | null => {
-    for (const script of fakeSprites.execScripts().slice(since)) {
+    for (const script of fakeSmolmachines.execScripts().slice(since)) {
       const m = /export AGENT_API_TOKEN=\W*([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.exec(script);
       if (!m) continue;
       const token = m[1]!;
@@ -946,7 +946,7 @@ test("turn e2e: trigger-fired turns mint `triggered` into the capability token; 
     return null;
   };
 
-  let mark = fakeSprites.execScripts().length;
+  let mark = fakeSmolmachines.execScripts().length;
   const turn = (triggered: boolean): TurnRequest =>
     ({
       surface: triggered ? "keychain-ask" : "slack",
@@ -962,7 +962,7 @@ test("turn e2e: trigger-fired turns mint `triggered` into the capability token; 
   assert.equal(human!.triggered, undefined, "a surface-authenticated human turn carries no triggered claim");
   assert.equal(human!.threadRef, "ch:C9-t", "the token carries the conversation threadRef for ask continuity");
 
-  mark = fakeSprites.execScripts().length;
+  mark = fakeSmolmachines.execScripts().length;
   assert.equal((await built.app.turn(turn(true))).status, "ok");
   const fired = extractToken(mark);
   assert.ok(fired);

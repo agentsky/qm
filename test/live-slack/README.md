@@ -26,7 +26,7 @@ and has stopped changing for 5s.
 
 ## Run locally
 
-Bring up a dev instance (`/dev-instance up`) or `node cli/bin/qm.ts dev --ci up`, then:
+Bring up a dev instance (`/dev-instance up`) or `node scripts/dev/cli.ts ci up`, then:
 
 ```sh
 SLACK_QA_USER_TOKEN=xoxp-… SLACK_BOT_TOKEN=xoxb-… \
@@ -35,7 +35,7 @@ LIVE_E2E_FILTER=@smoke node test/live-slack/run.ts
 ```
 
 `LIVE_E2E_FILTER` takes a name substring, `@tag`, or `all` (`@smoke` = the two-scenario
-subset; `sandbox`-tagged scenarios are auto-skipped unless `SPRITES_TOKEN` is set).
+subset; `sandbox`-tagged scenarios are auto-skipped unless `LIVE_E2E_SANDBOX_AVAILABLE=1`).
 `LIVE_E2E_SHARD=n/m` splits the selected catalog deterministically for a CI matrix.
 Set `LIVE_E2E_OBSERVATIONAL=1` to report completed catalog failures (and alert when
 configured) without a nonzero exit; runner, setup, event-pump, and required-alert failures
@@ -65,9 +65,9 @@ Run locally (Free-tier keys cap the twin at 10 minutes — enough for `@smoke`):
 ```sh
 export ARGA_API_KEY=arga_sk_…
 eval "$(node test/live-slack/arga-provision.ts up | grep '^export ')"
-node cli/bin/qm.ts dev --ci up
+node scripts/dev/cli.ts ci up
 LIVE_E2E_FILTER=@smoke node test/live-slack/run.ts
-node cli/bin/qm.ts dev --ci down; node test/live-slack/arga-provision.ts down
+node scripts/dev/cli.ts ci down; node test/live-slack/arga-provision.ts down
 ```
 
 Twin-only scenarios (`scenarios-twin.ts`, tag `@twin`) exercise what a live workspace
@@ -79,7 +79,7 @@ rate limiting. Scenarios that mutate workspace-global twin config use the `exclu
 
 - **Tiers via tags.** `@core` is the fast high-signal subset run on every push to main;
   the full catalog (`all`) runs on PR-label + on-demand. `@multiuser` = the multi-user
-  channel scenarios; `@sandbox` = needs Fly; `@smoke` = the tiny two-scenario subset.
+  channel scenarios; `@sandbox` = needs a sandbox backend; `@smoke` = the tiny two-scenario subset.
   Capability tags gate _where_ a scenario can run: `twin` needs a twin backend, and
   `no-twin` is its inverse — a capability the twin cannot serve, skipped on twin runs
   (with the reason) so it can't produce a red that says nothing about the product.
@@ -118,8 +118,9 @@ im:history, im:write, reactions:write, files:read, files:write, users:read` and 
    var `LIVE_E2E_TARGET_CHANNEL` = its channel id) and `#ci-alerts` (invite the ci1
    bot; repo var `LIVE_E2E_ALERT_CHANNEL` = its id). Failures on main post there.
 4. **Remaining secrets** — `LIVE_E2E_ANTHROPIC_API_KEY`, `LIVE_E2E_CORE_SIGNING_SECRET`
-   (any random string; the runner instance is loopback-only), and the existing
-   `SPRITES_TOKEN` (sandbox turns) and `FLY_API_TOKEN` (the cloudflared self-API tunnel).
+   (any random string; the runner instance is loopback-only), and the credentials for
+   whichever sandbox backend the runner uses, with `LIVE_E2E_SANDBOX_AVAILABLE=1` to
+   enable `sandbox`-tagged scenarios.
 
 Runs are serialized per Slack app by the workflow's concurrency group — that _is_ the
 lease; there is no poolN.env machinery in CI.
@@ -183,8 +184,8 @@ self-explanations; read the transcript.
 ## Sandbox-provider release qualification
 
 Set `LIVE_E2E_SANDBOX_PROVIDERS=all` with `LIVE_E2E_GATE=1` to require a real
-agent `sandbox exec` on every implemented provider: Sprites, AWS, local Docker,
-Smolmachines, E2B, Modal, Porter, and Agent37. These eight scenarios run concurrently
+agent `sandbox exec` on every implemented provider: local Docker, Smolmachines,
+E2B, Modal, and Agent37. These five scenarios run concurrently
 in their own lane alongside the selected catalog. The source type requires a
 coverage entry when a provider is added. Missing providers, skips, retries,
 execution errors, and cleanup errors block release. Provider checks do not retry; a failed first execution blocks qualification.
@@ -208,16 +209,6 @@ operator reconciliation of retained resource records.
 
 The target instance must enable sandbox resources and configure every required
 provider with real credentials and infrastructure. Local Docker additionally
-requires a Docker-capable host and a built sandbox image; a Fargate service alone
-cannot supply it. Unconfigured providers are failures, never optional coverage.
-
-When staging cannot host Docker, run `scripts/qualify-local-provider.sh
-/path/to/release-candidate.json` as a separate required job on an ephemeral
-Docker-capable ARM64 runner. It pulls the candidate's immutable core image from
-ECR and checks its embedded source SHA against the checkout. The runner builds
-the local sandbox from that source, then invokes the candidate's real application,
-Pi harness, model, and sandbox tools. Only the probe and transcript assertion are
-mounted into the core container; application code comes from the candidate image.
-Provide AWS ECR access and `ANTHROPIC_API_KEY`. Require this job alongside cloud
-qualification before promotion. If capturing output through a pipe, use a shell
-with `pipefail` so a failed probe cannot become a successful job.
+requires a Docker-capable host and a sandbox image built with
+`npm run sandbox:local:build`. Unconfigured providers are failures, never optional
+coverage.
