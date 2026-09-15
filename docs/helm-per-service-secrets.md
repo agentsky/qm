@@ -66,7 +66,8 @@ graph LR
 - The routing lives in the chart as data an operator can read and override,
   and matches the CLI's routing for the services the CLI knows about.
 - A change to one workload's secrets rolls only that workload.
-- Existing releases upgrade with one values change and one rolling restart.
+- Existing releases upgrade with one rolling restart, and with a values change
+  only for a key outside the shipped defaults.
 
 ## Non-goals
 
