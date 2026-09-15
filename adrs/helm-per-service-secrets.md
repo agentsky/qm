@@ -2,7 +2,7 @@
 
 We run qm on Kubernetes through `deploy/helm/`. Every pod gets every secret. The chart renders `values.yaml` `secretEnv` into one `Secret` and attaches it to each Deployment with `envFrom`. The portal pod faces the Internet and holds `ANTHROPIC_API_KEY`, `DATABASE_URL`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `CAPABILITY_SECRET`, and the Admin-role `PORTER_DEPLOY_API_TOKEN`. It reads none of them. The web-ui pod reads three of the 29 values and holds all of them. A portal compromise is also a database, model-billing, and Porter-project compromise.
 
-The routing exists on every other target. The CLI's secret specs name the service that owns each secret, and `secretsForService` decides what each ECS task definition receives. `docs/porter.md` copies the same table by hand for `porter apply --secrets`. The chart uses neither, and the CLI has no Kubernetes target that could feed it.
+The routing exists on every other target. The CLI's secret specs name the service that owns each secret, and `secretsForService` decides what each ECS task definition receives. `docs/porter.md` copies the same routing by hand for `porter apply --secrets`. The chart uses neither, and the CLI has no Kubernetes target that could feed it.
 
 What we propose
 
@@ -14,9 +14,9 @@ Because each Secret comes from a named template, the checksum annotation hashes 
 
 A non-empty `secretEnv` value that no enabled workload consumes fails the render and names the key. Consumed means listed by the workload, or read as the source of an alias the workload emits. This removes the habit of adding a key to the map and expecting it everywhere, without breaking the alias case above.
 
-The defaults come from reading the code, not from the values file. They route every secret name the code reads, including the alternative harness credentials `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_AUTH_CREDENTIAL`, `CODEX_ACCESS_TOKEN`, and `CODEX_AUTH_CREDENTIAL`. The current template forwards any key an operator adds, so a Slack-enabled release already carries `SLACK_BOT_TOKEN` through `secretEnv` without the values file naming it, and the defaults route those too. They also route the non-secret settings the stock values file carries in `secretEnv`: `PUBLIC_API_URL`, `SANDBOX_BACKEND`, `DEPLOY_PROVIDER`, the `PORTER_*` values, the two apps domains, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, and `ADMIN_GRANTS`. A stock release therefore upgrades without a values change.
+The defaults come from reading the code, not from the values file. They route every secret name the code reads, including the alternative harness credentials `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_AUTH_CREDENTIAL`, `CODEX_ACCESS_TOKEN`, and `CODEX_AUTH_CREDENTIAL`. The current template forwards any key an operator adds, so a Slack-enabled release already carries `SLACK_BOT_TOKEN` through `secretEnv` without the values file naming it, and the defaults route those too. They also route the non-secret settings the stock values file carries in `secretEnv`: `PUBLIC_API_URL`, `SANDBOX_BACKEND`, `DEPLOY_PROVIDER`, the Porter URL, project and cluster IDs, and image names, the two apps domains, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, and `ADMIN_GRANTS`. A stock release therefore upgrades without a values change.
 
-Reading the code turned up three facts. The egress-proxy authz reads `CAPABILITY_SECRET` and `CORE_SIGNING_SECRET`. It reads `DATABASE_URL` only as a fallback audit sink when no core relay is configured, and the chart always configures one. The CLI does not know that service exists. Core reads `PORTAL_SESSION_SECRET` as the fallback for an undeclared `DEPLOY_APPS_SESSION_SECRET`, so the portal's cookie key reaches core until an operator sets the dedicated one. Web-ui reads `DEPLOY_APPS_DOMAIN` for its frame-ancestors policy, and a missing value degrades silently.
+Reading the code turned up three facts. The egress-proxy authz reads `CAPABILITY_SECRET` and `CORE_SIGNING_SECRET`. It reads `DATABASE_URL` only as a fallback audit sink when no core relay is configured, and the chart always configures one. The CLI does not know that service exists. When app publishing is configured, core reads `PORTAL_SESSION_SECRET` as the fallback for an undeclared `DEPLOY_APPS_SESSION_SECRET`, so the portal's cookie key reaches core until an operator sets the dedicated one. Web-ui reads `DEPLOY_APPS_DOMAIN` for its frame-ancestors policy, and a missing value degrades silently.
 
 Migration
 
@@ -24,7 +24,7 @@ One `helm upgrade`. Every pod rolls once, because its Secret is new, and comes b
 
 Verification
 
-CI renders the chart nowhere today. This ships with a `helm lint` and `helm template` check. It asserts one Secret per Deployment with the expected keys, the portal Secret free of the six keys above, exactly one chart-rendered `secretRef` per Deployment and that it names the workload's own Secret, the alias fixtures with the broker disabled, and an unused key failing with its name. A second check scans the code for credential-shaped environment reads (`TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `CREDENTIAL`) and fails on any name that is neither routed nor on a short exclusion list of non-secrets, so a new credential read cannot go unrouted.
+CI renders the chart nowhere today. This ships with a `helm lint` and `helm template` check. It asserts one Secret per Deployment with the expected keys, and the portal Secret free of the six keys above. It asserts exactly one chart-rendered `secretRef` per Deployment, naming that workload's own Secret. It runs the alias fixtures with the broker disabled, and it asserts that an unused key fails with its name. A second check scans the code for environment reads whose names contain `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, or `CREDENTIAL`. It fails on any name that is neither routed nor on a short exclusion list of non-secrets, so a new credential read cannot go unrouted.
 
 What this does not do
 
