@@ -4,9 +4,14 @@ Replacing long-lived static secrets with federated, short-lived credentials.
 
 This is the implementation plan: the full inventory, the mechanism analysis, and
 the phasing. File and line citations are against the tree at upstream
-`9e1ac06`, synced on 2026-09-14. The proposal for upstream is
+`bfb1ed1`, synced on 2026-09-14. The proposal for upstream is
 [`adrs/secretless-credentials.md`](../adrs/secretless-credentials.md), the same
 argument at proposal length. Keep the two in step when findings change.
+
+This plan stacks on
+[`helm-per-service-secrets.md`](./helm-per-service-secrets.md), which splits
+the chart's one shared `Secret` into one per workload with a routing list per
+service. Everything below assumes that has landed.
 
 ## Context
 
@@ -94,7 +99,7 @@ graph TB
   end
 
   subgraph Runtime["Runtime plane on Kubernetes"]
-    Sec[("one Secret<br/>release-env")]
+    Sec[("one Secret<br/>per workload")]
     Core["core"]
     Portal["portal (Internet-facing)"]
     Web["web-ui"]
@@ -107,7 +112,7 @@ graph TB
   GHA -->|"NPM_TOKEN — static"| NPM
   GHA -->|"AssumeRoleWithWebIdentity — ephemeral"| TF
   TF -->|"random_password into DATABASE_URL"| SM
-  Helm -->|"every value"| Sec
+  Helm -->|"routed per service"| Sec
   Sec -->|"envFrom"| Core
   Sec -->|"envFrom"| Portal
   Sec -->|"envFrom"| Web
@@ -126,25 +131,28 @@ graph TB
 The two green nodes are reached with ephemeral, federated credentials. Every
 other path rests on a value a human minted that does not expire.
 
-### The Helm chart hands every secret to every pod
+### The Helm chart, after the per-workload split
 
-This is the worst finding in the inventory and the one to fix first. The chart
-renders `values.yaml` `secretEnv` into a single `Secret` named `<release>-env`
-and attaches it with an unconditional `envFrom` to every Deployment it
-creates[^helmenvfrom]: core, web-ui, portal, and egress-proxy. So the one
-Internet-facing pod, portal, holds `ANTHROPIC_API_KEY`, `DATABASE_URL`,
-`CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `CAPABILITY_SECRET`, and the
-Admin-role `PORTER_DEPLOY_API_TOKEN`, none of which it uses. Non-secrets sit in
-the same Secret too: `SANDBOX_BACKEND`, the `PORTER_*_ID` values, image names,
-domains.
+The worst finding in the first draft of this plan was that the chart rendered
+`secretEnv` into one `Secret` and attached it to every Deployment, so the
+Internet-facing portal pod held the database, model, and Porter credentials.
+That is fixed by the per-workload split[^split], which lands before this plan
+and which this plan does not repeat. What the split leaves for the phases
+below:
 
-The per-service routing already exists on the ECS side. `SecretSpec.service`,
-`computedSecrets`, and `secretsForService` in `cli/src/secrets.ts` decide which
-task definition receives which secret, and `docs/porter.md` hand-copies the same
-table for operators to apply by hand[^portersecrets]. The chart ignores both.
-
-Per-surface identity in Phase B1 buys nothing while every surface already holds
-every secret. Splitting that Secret is step zero.
+- The values are still static and still typed into `secretEnv` by hand. The
+  split decides which pod gets a value, not where the value comes from.
+- The routing lists in `services.<name>.secrets` are maintained by hand. The
+  CLI's spec list knows the same routing for every service it declares, and
+  the CLI has no Kubernetes target to render it with[^clibackends]. A1 closes
+  that.
+- Two reads the split's routing table surfaced stay in the inventory:
+  egress-proxy reads `DATABASE_URL`, `CAPABILITY_SECRET`, and
+  `CORE_SIGNING_SECRET` while the CLI does not know the service exists, and
+  core reads `PORTAL_SESSION_SECRET` as the fallback for an undeclared
+  `DEPLOY_APPS_SESSION_SECRET`.
+- Per-surface identity in Phase B1 would have bought nothing while every
+  surface held every secret. That is why the split lands first.
 
 ### The service-to-service case
 
@@ -204,47 +212,48 @@ the pods on its own.
 
 Tiers are defined in the next section.
 
-| Secret                                                                                                           | Where it lives                | Today                                                                                                                    | Tier  |
-| ---------------------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----- |
-| AWS deploy role                                                                                                  | `main.tf:311`                 | GitHub OIDC, subject + audience pinned                                                                                   | 0     |
-| GHCR push                                                                                                        | `release-package.yml`         | `github.token`, per-job                                                                                                  | 0     |
-| Cosign signing key                                                                                               | `release-package.yml`         | keyless, Fulcio + OIDC                                                                                                   | 0     |
-| Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer` | cert-manager issues and rotates                                                                                          | 0     |
-| `CORE_SIGNING_SECRET`                                                                                            | every pod via `envFrom`       | shared static HMAC                                                                                                       | 1     |
-| `PORTAL_IDENTITY_SECRET`                                                                                         | every pod via `envFrom`       | shared static HMAC, portal mints                                                                                         | 1     |
-| `DATABASE_URL`                                                                                                   | every pod via `envFrom`       | static password, no rotation path                                                                                        | 1     |
-| `PORTER_DEPLOY_API_TOKEN`                                                                                        | every pod via `envFrom`       | Admin-role token; used for sandboxes and for app publishing[^porterboth]                                                 | 1     |
-| `NPM_TOKEN`                                                                                                      | `publish-cli.yml:89`          | static automation token                                                                                                  | 1     |
-| `imagePullSecrets`                                                                                               | `values.yaml`                 | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                              | 1     |
-| `CONNECTOR_SECRET_KEY`                                                                                           | every pod via `envFrom`       | static encryption key, one value                                                                                         | 2     |
-| `AUTH_SIGNING_JWK`                                                                                               | every pod via `envFrom`       | static P-256 private key                                                                                                 | 2     |
-| `CAPABILITY_SECRET`                                                                                              | every pod via `envFrom`       | static HMAC, one value                                                                                                   | 2     |
-| `SKILL_SIGNING_SECRET`                                                                                           | every pod via `envFrom`       | static HMAC, one value                                                                                                   | 2     |
-| `AUTH_TOKEN_SECRET`                                                                                              | every pod via `envFrom`       | static HMAC, one value                                                                                                   | 2     |
-| `PORTAL_SESSION_SECRET`                                                                                          | every pod via `envFrom`       | static cookie key, one value                                                                                             | 2     |
-| `DEPLOY_APPS_SESSION_SECRET`                                                                                     | core                          | static cookie key, undeclared by the CLI                                                                                 | 2     |
-| `AWS_DEPLOY_GATE_SECRET`                                                                                         | core                          | static HMAC, one value                                                                                                   | 2     |
-| `AUTH_CLIENT_SECRET`                                                                                             | every pod via `envFrom`       | CLI-generated; becomes in-process after B1, never deployed                                                               | 1     |
-| `DATABASE_POOL_URL`                                                                                              | operator-supplied             | must carry the same credentials as `DATABASE_URL`                                                                        | 2     |
-| `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                                                  | core, Fly targets only        | minted at `-x 8760h`[^flytokens]                                                                                         | 2     |
-| `ANTHROPIC_API_KEY`                                                                                              | every pod via `envFrom`       | static vendor key; Anthropic WIF is GA                                                                                   | 1     |
-| `OPENAI_API_KEY`                                                                                                 | core                          | static vendor key; OpenAI WIF is GA                                                                                      | 1     |
-| `OPENROUTER_API_KEY`                                                                                             | core                          | rotatable through its management-keys API; root in the rotation Job                                                      | 2     |
-| `MODEL_GATEWAY_API_KEY`                                                                                          | core                          | static bearer, undeclared by the CLI                                                                                     | 3     |
-| `SLACK_BOT_TOKEN`                                                                                                | durable store                 | Slack token rotation, opt-in; needs refresh handling in the installation store                                           | 2     |
-| `SLACK_APP_TOKEN`                                                                                                | durable store                 | encrypted at rest, no vendor rotation API                                                                                | 3     |
-| `SLACK_SIGNING_SECRET`                                                                                           | core, env only                | no stored path, no vendor rotation API                                                                                   | 3     |
-| `SPRITES_TOKEN`, `E2B_API_KEY`, `MODAL_TOKEN_*`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY`                         | core                          | dashboard-minted; moot on this path once B4 lands                                                                        | 3     |
-| `SECURITY_SCREEN_PROXY_TOKEN`                                                                                    | core                          | static bearer to a third-party screen                                                                                    | 3     |
-| `RESEND_API_KEY`                                                                                                 | every pod via `envFrom`       | rotatable through Resend's API; root in the rotation Job                                                                 | 2     |
-| `SMTP_PASSWORD`                                                                                                  | auth                          | on SES, derived from an IAM access key with a published rotation (Tier 2); on any other relay, dashboard-minted (Tier 3) | 2 / 3 |
-| `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                                                    | core                          | ESO-carried; human-rotated at the IdP, propagates restart-free; PKCE public client removes it where the IdP permits      | 2     |
-| `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` | core                          | same as above, and undeclared by the CLI                                                                                 | 2     |
-| `OIDC_CLIENT_SECRET` (external IdP)                                                                              | portal                        | ESO-carried; `private_key_jwt` removes it where the IdP supports it                                                      | 2     |
+| Secret                                                                                                           | Where it lives                     | Today                                                                                                                    | Tier  |
+| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----- |
+| AWS deploy role                                                                                                  | `main.tf:311`                      | GitHub OIDC, subject + audience pinned                                                                                   | 0     |
+| GHCR push                                                                                                        | `release-package.yml`              | `github.token`, per-job                                                                                                  | 0     |
+| Cosign signing key                                                                                               | `release-package.yml`              | keyless, Fulcio + OIDC                                                                                                   | 0     |
+| Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer`      | cert-manager issues and rotates                                                                                          | 0     |
+| `CORE_SIGNING_SECRET`                                                                                            | core, portal, web-ui, egress-proxy | shared static HMAC                                                                                                       | 1     |
+| `PORTAL_IDENTITY_SECRET`                                                                                         | core, portal, web-ui               | shared static HMAC, portal mints                                                                                         | 1     |
+| `DATABASE_URL`                                                                                                   | core, egress-proxy                 | static password, no rotation path                                                                                        | 1     |
+| `PORTER_DEPLOY_API_TOKEN`                                                                                        | core                               | Admin-role token; used for sandboxes and for app publishing[^porterboth]                                                 | 1     |
+| `NPM_TOKEN`                                                                                                      | `publish-cli.yml:89`               | static automation token                                                                                                  | 1     |
+| `imagePullSecrets`                                                                                               | `values.yaml`                      | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                              | 1     |
+| `CONNECTOR_SECRET_KEY`                                                                                           | core                               | static encryption key, one value                                                                                         | 2     |
+| `AUTH_SIGNING_JWK`                                                                                               | portal                             | static P-256 private key                                                                                                 | 2     |
+| `CAPABILITY_SECRET`                                                                                              | core, egress-proxy                 | static HMAC, one value                                                                                                   | 2     |
+| `SKILL_SIGNING_SECRET`                                                                                           | core                               | static HMAC, one value                                                                                                   | 2     |
+| `AUTH_TOKEN_SECRET`                                                                                              | portal                             | static HMAC, one value                                                                                                   | 2     |
+| `PORTAL_SESSION_SECRET`                                                                                          | portal; core as a fallback         | static cookie key, one value                                                                                             | 2     |
+| `DEPLOY_APPS_SESSION_SECRET`                                                                                     | core                               | static cookie key, undeclared by the CLI                                                                                 | 2     |
+| `AWS_DEPLOY_GATE_SECRET`                                                                                         | core                               | static HMAC, one value                                                                                                   | 2     |
+| `AUTH_CLIENT_SECRET`                                                                                             | portal                             | CLI-generated; becomes in-process after B1, never deployed                                                               | 1     |
+| `DATABASE_POOL_URL`                                                                                              | operator-supplied                  | must carry the same credentials as `DATABASE_URL`                                                                        | 2     |
+| `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                                                  | core, Fly targets only             | minted at `-x 8760h`[^flytokens]                                                                                         | 2     |
+| `ANTHROPIC_API_KEY`                                                                                              | core                               | static vendor key; Anthropic WIF is GA                                                                                   | 1     |
+| `OPENAI_API_KEY`                                                                                                 | core                               | static vendor key; OpenAI WIF is GA                                                                                      | 1     |
+| `OPENROUTER_API_KEY`                                                                                             | core                               | rotatable through its management-keys API; root in the rotation Job                                                      | 2     |
+| `MODEL_GATEWAY_API_KEY`                                                                                          | core                               | static bearer, undeclared by the CLI                                                                                     | 3     |
+| `SLACK_BOT_TOKEN`                                                                                                | durable store                      | Slack token rotation, opt-in; needs refresh handling in the installation store                                           | 2     |
+| `SLACK_APP_TOKEN`                                                                                                | durable store                      | encrypted at rest, no vendor rotation API                                                                                | 3     |
+| `SLACK_SIGNING_SECRET`                                                                                           | core, env only                     | no stored path, no vendor rotation API                                                                                   | 3     |
+| `SPRITES_TOKEN`, `E2B_API_KEY`, `MODAL_TOKEN_*`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY`                         | core                               | dashboard-minted; moot on this path once B4 lands                                                                        | 3     |
+| `SECURITY_SCREEN_PROXY_TOKEN`                                                                                    | core                               | static bearer to a third-party screen                                                                                    | 3     |
+| `RESEND_API_KEY`                                                                                                 | core, portal                       | rotatable through Resend's API; root in the rotation Job                                                                 | 2     |
+| `SMTP_PASSWORD`                                                                                                  | auth                               | on SES, derived from an IAM access key with a published rotation (Tier 2); on any other relay, dashboard-minted (Tier 3) | 2 / 3 |
+| `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                                                    | core                               | ESO-carried; human-rotated at the IdP, propagates restart-free; PKCE public client removes it where the IdP permits      | 2     |
+| `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` | core                               | same as above, and undeclared by the CLI                                                                                 | 2     |
+| `OIDC_CLIENT_SECRET` (external IdP)                                                                              | portal                             | ESO-carried; `private_key_jwt` removes it where the IdP supports it                                                      | 2     |
 
-"Every pod via `envFrom`" is the Helm chart today. Under Porter the operator
-passes each value by hand with `--secrets`, which at least lets them scope it,
-but nothing enforces the scoping.
+The "where it lives" column is the Helm chart after the per-workload
+split[^split]. Under Porter the operator passes each value by hand with
+`--secrets`, which lets them scope it the same way, but nothing enforces the
+scoping.
 
 ## The tiering
 
@@ -300,12 +309,12 @@ chokepoints and none is universal:
 
 So A1 reconciles the two declaration lists into one, widens `SecretSource` until
 core reads its own secrets through it, and — this is the part the ECS-shaped
-first draft missed — gives that list a Kubernetes emitter. The spec already
-knows which service needs which secret; on Kubernetes that has to become
-per-service `Secret`s or per-service `ExternalSecret`s, rendered into Helm
-values rather than typed into `secretEnv` by hand. Until the seam emits
-something the chart consumes, marking a spec federated reaches nothing on this
-path.
+first draft missed — gives that list a Kubernetes emitter. The per-workload
+split gave the chart a hand-maintained routing list per service, and the spec
+already knows the same routing for every service the CLI declares. A1 renders
+those lists, and later the per-service `ExternalSecret`s, from the spec
+instead of maintaining them by hand. Until the seam emits something the chart
+consumes, marking a spec federated reaches nothing on this path.
 
 ```mermaid
 graph TB
@@ -314,7 +323,7 @@ graph TB
     B1["src/deployment/secret-schema.ts<br/>RuntimeSecretSpec"]
     C1["src/config.ts<br/>reads process.env directly"]
     D1["src/credentials/secret-source.ts<br/>connector clients only"]
-    H1["deploy/helm/values.yaml secretEnv<br/>hand-typed, one Secret"]
+    H1["deploy/helm/values.yaml<br/>hand-maintained services.*.secrets"]
   end
 
   subgraph After["After Phase A"]
@@ -614,8 +623,8 @@ split-off list.
 ### Phase B4: a Kubernetes sandbox backend and deploy provider
 
 `PORTER_DEPLOY_API_TOKEN` is the largest static credential in the table on this
-path: an Admin-role token that can do anything in the Porter project, handed to
-every pod by the chart. It has two consumers in core, not one: `porterSandboxEnv`
+path: an Admin-role token that can do anything in the Porter project, handed to the
+core pod alone since the per-workload split. It has two consumers in core, not one: `porterSandboxEnv`
 reads it for the sandbox backend and `porterDeployEnv` reads it again for
 `DEPLOY_PROVIDER=porter`, which publishes apps[^porterboth]. A plan that
 replaces only the sandbox half leaves the Admin token in place for publishing.
@@ -943,13 +952,12 @@ gantt
   axisFormat %b
   section Phase A
   Design doc (this PR)          :done, d1, 2026-09-14, 7d
-  A0 split the Helm Secret per service :a0, after d1, 14d
-  A1 reconcile the spec lists and build the seam :a1, after a0, 35d
+  A1 reconcile the spec lists and build the seam :a1, after d1, 35d
   A2 multi-key verification     :a2, after d1, 21d
   section Phase B
-  B0 per-service ServiceAccounts :b0, after a0, 7d
+  B0 per-service ServiceAccounts :b0, after d1, 7d
   B1 projected SA tokens core to surfaces :b1, after b0, 30d
-  B2 database credential on RDS and CloudNativePG :b2, after a0, 30d
+  B2 database credential on RDS and CloudNativePG :b2, after d1, 30d
   B3 npm trusted publishing     :b3, after d1, 14d
   B4 Kubernetes sandbox backend and deploy provider :b4, after b1, 45d
   B5 Anthropic WIF for the model key :b5, after a1, 14d
@@ -961,9 +969,8 @@ gantt
   D1 containment and age reporting :e1, after c1, 21d
 ```
 
-The Helm Secret split is scheduled first and independently, because it removes
-the worst finding with no seam work, and because Phase B1 is pointless until it
-lands. A2 starts from the design doc in parallel with everything: it depends on
+The Helm Secret split is its own plan and precedes this one; Phase B1 is
+pointless until it has landed, and nothing here reschedules it. A2 starts from the design doc in parallel with everything: it depends on
 nothing and, per the risk table, gates every ESO `refreshInterval`. B5 depends
 only on the seam. B3 and B6 are independent of the rest and carry their own
 caveats.
@@ -1004,8 +1011,8 @@ projected token is simpler and the cluster already runs the issuer.
 
 | Risk                                                                           | Mitigation                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The Helm Secret split lands but the CLI never emits it, so it drifts by hand   | The split is rendered from the spec list in A1, not hand-maintained; the chart honors `secretEnv` for one release with a deprecation warning and fails in the release after                                                |
-| Phase A lands and the later phases do not, leaving refactor without benefit    | Schedule the Secret split, `NPM_TOKEN`, and the database credential independently so value lands either way                                                                                                                |
+| The split's hand-maintained routing lists drift from the spec list             | A1 renders them from the spec; until then the split's render check pins them                                                                                                                                               |
+| Phase A lands and the later phases do not, leaving refactor without benefit    | The Secret split already landed on its own; schedule `NPM_TOKEN` and the database credential the same way so value lands either way                                                                                        |
 | An ESO refresh rotates a shared key and takes the fleet down                   | A2 lands before any `refreshInterval` is set on a single-value key, and its activate step waits for every verifier to report the new generation                                                                            |
 | A producer refreshes to the new key before a verifier holds it                 | Prepare precedes activate in A2; current-plus-previous alone does not cover this ordering and is not the design                                                                                                            |
 | Bearer tokens transit the chart's plain-HTTP service URLs                      | B1 refuses bearer mode unless TLS or an enforced encrypted network is configured; the chart wires TLS to core when bearer mode is on                                                                                       |
@@ -1013,7 +1020,7 @@ projected token is simpler and the cluster already runs the issuer.
 | A rotated value is invisible to a running pod                                  | Core reads through the seam from a file-mounted Secret the kubelet updates in place, or under `SECRETS_BACKEND=aws` with a cache TTL; a reloader is the fallback only for values that must stay in `envFrom`               |
 | `TokenReview` becomes a hard dependency on core's request path                 | A revocation-latency budget bounds the cache; serve from cache only within it when the API server is unreachable, fail closed past it, and never turn an explicit rejection into success through offline JWKS verification |
 | The pooled-path invariant blocks partial migration                             | `pooledDatabaseUrl` changes in B2 under both designs; RDS Proxy on RDS and the CloudNativePG `Pooler` in-cluster each make the pooled path token- or operator-authenticated                                                |
-| The Porter token stays because B4 is large                                     | Scope it to core's `ExternalSecret` alone as an interim, so at least the Internet-facing pod stops holding it; B4 covers both the sandbox and the publishing consumer                                                      |
+| The Porter token stays because B4 is large                                     | The per-workload split already keeps it out of every pod but core; B4 covers both the sandbox and the publishing consumer                                                                                                  |
 | Targets without a workload issuer diverge from Kubernetes                      | Keep the HMAC and KMS paths as explicit `federation` variants, exercised by the same tests                                                                                                                                 |
 | The work stalls halfway and the system carries both mechanisms forever         | Each phase deletes its secret from the spec list as its last step; a half-finished phase is visible in that list                                                                                                           |
 | A rolling upgrade kills an in-flight turn                                      | Core has ECS task protection and no Kubernetes equivalent[^ecstaskprot]; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                                 |
@@ -1039,8 +1046,8 @@ author. Each is folded into the phase it affects; this list is the record.
    federation on the presence of the projected token file and falls back to
    HMAC and the static key otherwise. Folded into A1.
 6. **Existing deployments.** Every step is additive with a dual-accept window
-   if ordered: A2 first, then the Secret split with `secretEnv` honored for one
-   more release, then per-service ServiceAccounts, then B1 with HMAC still
+   if ordered: the Secret split first on its own, then A2, then per-service
+   ServiceAccounts, then B1 with HMAC still
    accepted, then the database with the password path kept until IAM or
    CloudNativePG is proven. The one gap is in-flight turns during a roll, which
    the risk table covers.
@@ -1074,6 +1081,8 @@ folded into a phase or recorded above as a decision.
 
 ## References
 
+[^split]: [`helm-per-service-secrets.md`](./helm-per-service-secrets.md) — one `Secret` per Deployment, routed by `services.<name>.secrets`, with the render check that pins the routing.
+
 [^clibackends]: `cli/src/backends/registry.ts:96`, `:149`, `:230` — the three hosting providers are `docker`, `fly`, and `aws`. No Kubernetes or Porter target exists; `docs/porter.md` notes that `cli/src/services.ts` has no Porter wiring either.
 
 [^specs]: `cli/src/secrets.ts:43` — `FIRST_PARTY_SECRET_SPECS`, the typed schema from which `.env.example`, Terraform `secret_names`, and per-task ECS secret routing are derived. Deploy-side only; nothing under `src/` imports it.
@@ -1085,10 +1094,6 @@ folded into a phase or recorded above as a decision.
 [^oidctrust]: `cli/src/backends/aws.ts:2973` — `assertGithubDeployTrust` requires exactly one trust statement, `sts:AssumeRoleWithWebIdentity` only, a pinned `sts.amazonaws.com` audience, and subjects without wildcards. The role itself is `cli/templates/aws/main.tf:311`.
 
 [^security]: [`SECURITY.md`](../../../../SECURITY.md) — "Sandbox credentials are plaintext while in use", and the operator assumptions around credential materialization.
-
-[^helmenvfrom]: `deploy/helm/templates/secret.yaml` renders every `secretEnv` value into one `Secret`; `deploy/helm/templates/deployment.yaml:122` attaches it by `secretRef` inside an `envFrom` that every rendered Deployment receives. Admin and auth are embedded in web-ui and portal respectively, so the four Deployments are core, web-ui, portal, and egress-proxy.
-
-[^portersecrets]: `docs/porter.md:121` — secrets are passed with `--secrets KEY=value`; `:147` names `src/deployment/secret-schema.ts` as the authoritative list the hand-copied wiring table is transcribed from.
 
 [^computed]: `cli/src/secrets.ts:559` — every plugin with `coreAccess !== false` is added to `CORE_SIGNING_SECRET`'s service list.
 
@@ -1102,7 +1107,7 @@ folded into a phase or recorded above as a decision.
 
 [^loadconfig]: `src/config.ts:993` — `loadConfig(env = process.env)` reads every secret once at boot.
 
-[^helmchecksum]: `deploy/helm/templates/deployment.yaml:26` — the annotation hashes the chart's own `secret.yaml` render, so a change to an ESO-managed Secret does not alter it.
+[^helmchecksum]: `deploy/helm/templates/deployment.yaml:26` — the annotation hashes the chart's own `secret.yaml` render (per workload after the split), so a change to an ESO-managed Secret does not alter it.
 
 [^flytokens]: `cli/src/secrets.ts:119` (`fly tokens create org -o <fly-org> -x 8760h`) and `cli/src/preflight.ts:96` (`fly tokens create deploy -a <app> -x 8760h`).
 
