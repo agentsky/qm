@@ -1,3 +1,5 @@
+import { createFlyTunnelManager, parseFlyWireguardPeers } from "./deploy/fly-tunnel-manager.ts";
+import type { FlyPeerClaim } from "./deploy/fly-peer-claims.ts";
 import { createMemoryEventBus } from "./util/event-bus.ts";
 import { createPostgresNotifyBus } from "./persistence/postgres-notify-bus.ts";
 import { emitRunText, type RunStreamEvent } from "./runs/run-stream-events.ts";
@@ -140,7 +142,7 @@ import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
 import { createDockerDeployProvider } from "./deploy/docker-deploy-provider.ts";
 import { createAwsDeployProvider, type StoredDeployBody } from "./deploy/aws-deploy-provider.ts";
-import { createFlyDeployProvider } from "./deploy/fly-deploy-provider.ts";
+import { createFlyDeployProvider, type FlyMachineConfig } from "./deploy/fly-deploy-provider.ts";
 import { createPorterDeployProvider, type StoredPorterDeployBody } from "./deploy/porter-deploy-provider.ts";
 import type { DeployProvider } from "./deploy/deploy-provider.ts";
 import { createDeployService } from "./deploy/deploy-service.ts";
@@ -706,7 +708,12 @@ export function buildApp(
     config.databaseUrl && (config.budgetUsdPerWindow !== undefined || config.orgBudgetUsdPerWindow !== undefined)
       ? createPostgresBudgetTracker(config.databaseUrl, budgetOpts)
       : createBudgetTracker(budgetOpts);
-  const resolution = createResolutionService(config.orgId, configStore, acl);
+  const resolution = createResolutionService(
+    config.orgId,
+    configStore,
+    acl,
+    config.securityScreenBackend !== "off" || Boolean(overrides.securityScreener),
+  );
 
   const workspace = createLocalWorkspaceStore(config.dataDir);
   const blobTransfer: BlobTransferStore =
@@ -926,6 +933,9 @@ export function buildApp(
   for (const name of Object.keys(buildBackend) as Array<Config["sandboxBackend"]>) {
     if (name !== config.sandboxBackend && enabledBackends.has(name)) sandboxBackends[name] = buildBackend[name]();
   }
+  for (const backend of Object.values(config.sandboxScopeDefaults ?? {})) {
+    if (backend && !sandboxBackends[backend]) throw new Error(`Scope sandbox backend ${backend} is not configured`);
+  }
   const sandboxRoutes = artifactMap<SandboxRoute>("sandbox_routing");
   const sandboxResources = createSandboxResources({
     enabled: config.sandboxResourcesEnabled,
@@ -944,6 +954,7 @@ export function buildApp(
     routes: sandboxRoutes,
     backends: sandboxBackends,
     defaultBackend: config.sandboxBackend,
+    scopeDefaults: config.sandboxScopeDefaults,
     lock: advisoryLock,
     beforeRetire: async (record) => {
       if (
@@ -981,12 +992,14 @@ export function buildApp(
     backends: sandboxBackends,
     routes: sandboxRoutes,
     defaultBackend: config.sandboxBackend,
+    scopeDefaults: config.sandboxScopeDefaults,
     onError: sandboxOnError,
   });
   const sandboxMigration = createSandboxMigrationRunner({
     backends: sandboxBackends,
     routes: sandboxRoutes,
     defaultBackend: config.sandboxBackend,
+    scopeDefaults: config.sandboxScopeDefaults,
     advisoryLock,
     settleMs: ROUTE_CACHE_TTL_MS,
     provisionOptions: async (scopeId) => {
@@ -1269,6 +1282,14 @@ export function buildApp(
     );
   });
 
+  if (
+    config.securityScreenBackend !== "model" &&
+    !config.securityScreenProxy?.shadow &&
+    !overrides.securityScreener?.shadow
+  ) {
+    delete harness.models.screenSecurity;
+  }
+
   const leaseTtlMs = config.leaseTtlMs;
   const maxAttempts = config.maxAttempts;
   const runStore =
@@ -1370,10 +1391,28 @@ export function buildApp(
       advisoryLock,
       store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
     });
+  if (config.deployProvider === "fly" && config.flyDeploy.sharedAppName && !config.flyDeploy.wireguardPeers)
+    throw new Error("Fly shared apps require FLY_DEPLOY_WIREGUARD_PEERS for private connectivity");
+  const flyTunnel =
+    config.deployProvider === "fly" && config.flyDeploy.wireguardPeers
+      ? createFlyTunnelManager({
+          peers: parseFlyWireguardPeers(config.flyDeploy.wireguardPeers),
+          claims: artifactMap<FlyPeerClaim>("fly_peer_claims"),
+          metadataUri: config.flyDeploy.metadataUri ?? "",
+          executable: "wireproxy",
+          port: 18096,
+        })
+      : undefined;
   const buildDeployProvider: Record<Config["deployProvider"], () => DeployProvider> = {
     aws: buildAwsDeploy,
     docker: createDockerDeployProvider,
-    fly: () => createFlyDeployProvider(config.flyDeploy),
+    fly: () =>
+      createFlyDeployProvider({
+        ...config.flyDeploy,
+        ...(flyTunnel ? { privateTransport: flyTunnel } : {}),
+        configStore: artifactMap<FlyMachineConfig>("fly_deploy_configs"),
+        portStore: artifactMap<string>("fly_deploy_ports"),
+      }),
     porter: () =>
       createPorterDeployProvider({
         ...config.porterDeploy,
@@ -1381,6 +1420,13 @@ export function buildApp(
         store: artifactMap<StoredPorterDeployBody>("porter_deploy_bodies"),
       }),
   };
+  if (
+    config.deployProvider === "fly" &&
+    (config.flyDeploy.dataVolumeSizeGb || config.flyDeploy.sharedAppName || config.flyDeploy.wireguardPeers) &&
+    !config.databaseUrl
+  ) {
+    throw new Error("Fly durable application storage requires DATABASE_URL for persistent rollback configuration");
+  }
   const deployProvider: DeployProvider = buildDeployProvider[config.deployProvider]();
   if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
     console.warn(
@@ -1815,6 +1861,7 @@ export function buildApp(
     requestFire: (loopId) => void loopFire.fire(loopId, `loop:${loopId}:slack-event:${Date.now()}`).catch(() => {}),
   });
   const slackCore = createSlackCoreClient({
+    surfaceCache,
     inboxEvent: (event) => inboxRealtime.onConversationEvent(event),
     app,
     leaderLease,
@@ -1910,6 +1957,7 @@ export function buildApp(
   );
   orchestratorDeps.channelPolicy = channelPolicy;
   orchestratorDeps.surfaceCache = surfaceCache;
+  orchestratorDeps.slackContextSource = config.slackContextSource ?? "live";
   const askResolution = keychain
     ? (ask: KeychainAsk, grant?: KeychainGrant) =>
         fireAskResolution(
@@ -2109,6 +2157,7 @@ export function buildApp(
     : null;
   const runtime: Runtime = {
     start() {
+      flyTunnel?.monitor();
       if (!config.backgroundWorkEnabled) return;
       for (const w of workers) w.start();
       reaper.start();
@@ -2157,6 +2206,7 @@ export function buildApp(
       void runStreamEvents.close?.();
       await harness.turns.close?.();
       await tasks.close?.();
+      await flyTunnel?.stop();
     },
   };
 
@@ -2328,6 +2378,7 @@ export function serverDeps(
     ...(config.awsDeploy.gateSecret ? { deployGateSecret: config.awsDeploy.gateSecret } : {}),
     ...(config.deployAppsSessionSecret ? { deployAppsSessionSecret: config.deployAppsSessionSecret } : {}),
     ...(config.deployAppsLoginUrl ? { deployAppsLoginUrl: config.deployAppsLoginUrl } : {}),
+    ...(config.deployAppsLoginPath ? { deployAppsLoginPath: config.deployAppsLoginPath } : {}),
     scheduler: built.scheduler,
     webhookReceiver: built.webhookReceiver,
     identity: built.identity,

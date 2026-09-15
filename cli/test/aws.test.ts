@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   assertAwsDeploymentStorage,
+  assertAwsServiceDiscovery,
   assertAwsPublicListener,
   assertAwsPublicRouting,
   assertGithubDeployTrust,
@@ -59,7 +60,9 @@ function fakeAws(
   ingress: {
     blueGreen?: boolean;
     sharedHost?: string;
+    sharedAppsHost?: string;
     siblingHost?: string;
+    siblingAppsHost?: string;
     siblingOwnTarget?: boolean;
     coreHosts?: string[];
     targetGroups?: Partial<Record<"core" | "portal", string>>;
@@ -126,14 +129,24 @@ function fakeAws(
   if (ingress.sharedHost) {
     (baseRules[0]!.Conditions as unknown[]).push({
       Field: "host-header",
-      HostHeaderConfig: { Values: [ingress.sharedHost] },
+      HostHeaderConfig: { Values: [ingress.sharedHost, ...(ingress.sharedAppsHost ? [ingress.sharedAppsHost] : [])] },
     });
     groups.push({ TargetGroupArn: "other-target", TargetGroupName: "other-target" });
     baseRules.push({
       RuleArn: "other-rule",
       IsDefault: false,
       Actions: [{ Type: "forward", TargetGroupArn: ingress.siblingOwnTarget ? targetArn : "other-target" }],
-      Conditions: [{ Field: "host-header", HostHeaderConfig: { Values: [ingress.siblingHost ?? "other.example"] } }],
+      Conditions: [
+        {
+          Field: "host-header",
+          HostHeaderConfig: {
+            Values: [
+              ingress.siblingHost ?? "other.example",
+              ...(ingress.siblingAppsHost ? [ingress.siblingAppsHost] : []),
+            ],
+          },
+        },
+      ],
     });
   }
   writeFileSync(log, "");
@@ -569,6 +582,24 @@ test("AWS environment derives identity, public URLs, private wiring, and MicroVM
   assert.equal(core.DEPLOY_PROVIDER, "aws");
   assert.equal(core.AWS_DEPLOY_REGION, "us-west-2");
   assert.equal(core.PORT, "8080");
+});
+
+test("AWS hosting preserves an explicit publishing provider independently of sandbox selection", () => {
+  for (const sandbox of [config.sandbox, undefined]) {
+    for (const provider of ["fly", "porter"]) {
+      const selected: QmConfig = {
+        ...config,
+        sandbox,
+        env: { ...config.env, core: { ...config.env.core, DEPLOY_PROVIDER: provider } },
+      };
+      const core = serviceEnvironment(selected, "core");
+      assert.equal(core.DEPLOY_PROVIDER, provider);
+      assert.equal(core.SANDBOX_BACKEND, sandbox?.backend ?? "aws");
+      assert.equal(core.SESSION_STORE, "postgres");
+      assert.equal(core.SNAPSHOT_STORE, "s3");
+      assert.equal(serviceEnvironment(selected, "portal").DEPLOY_PROVIDER, undefined);
+    }
+  }
 });
 
 test("a configured bot identity lands in the AWS core task env and only there", () => {
@@ -1157,6 +1188,9 @@ test("AWS portal ALB adopts pinned target groups and requires exactly the env-de
   };
   try {
     await run(hostSplitConfig(bothHosts));
+    const portalApps = hostSplitConfig(bothHosts);
+    portalApps.env.portal = { ...portalApps.env.portal, PORTAL_APPS_DOMAIN: bothHosts.appsDomain };
+    await run(portalApps);
     await run(hostSplitConfig({ apiUrl: bothHosts.apiUrl }));
     await run(hostSplitConfig({ appsDomain: bothHosts.appsDomain }));
     await run(hostSplitConfig({ apiUrl: "https://API.agent.acme.example", appsDomain: "APPS.agent.acme.example." }));
@@ -5069,18 +5103,43 @@ test("shared ALB validates company routes while rejecting sibling overlap", () =
     ],
   ]);
   const hostname = new URL(company.publicUrl).hostname;
-  for (const variant of ["valid", "same-host", "wildcard", "own-target", "wrong-host"]) {
+  for (const variant of [
+    "valid",
+    "same-host",
+    "wildcard",
+    "own-target",
+    "wrong-host",
+    "apps",
+    "apps-missing",
+    "apps-wrong",
+    "sibling-apps",
+  ]) {
+    const appDomain = `apps.${hostname}`;
+    const selected = variant.startsWith("apps")
+      ? {
+          ...company,
+          env: {
+            ...company.env,
+            core: { ...company.env.core, DEPLOY_APPS_DOMAIN: appDomain },
+            portal: { ...company.env.portal, PORTAL_APPS_DOMAIN: appDomain },
+          },
+        }
+      : company;
     const dir = mkdtempSync(join(tmpdir(), "qm-shared-alb-"));
     const fake = fakeAws(dir, "", "portal", {
       blueGreen: true,
       sharedHost: variant === "wrong-host" ? "wrong.example" : hostname,
+      ...(variant === "apps" ? { sharedAppsHost: `*.${appDomain}` } : {}),
+      ...(variant === "apps-wrong" ? { sharedAppsHost: `*.wrong.${hostname}` } : {}),
+      ...(variant === "sibling-apps" ? { siblingAppsHost: "*.apps.other.example" } : {}),
       siblingHost:
         ({ "same-host": hostname, wildcard: "*.example" } as Record<string, string>)[variant] ?? "other.example",
       siblingOwnTarget: variant === "own-target",
     });
     try {
-      if (variant === "valid") assert.equal(assertAwsPublicRouting(company, services).get("portal"), primary);
-      else assert.throws(() => assertAwsPublicRouting(company, services), /shared ALB/);
+      if (["valid", "apps", "sibling-apps"].includes(variant))
+        assert.equal(assertAwsPublicRouting(selected, services).get("portal"), primary);
+      else assert.throws(() => assertAwsPublicRouting(selected, services), /shared ALB/);
       assert.throws(
         () => assertAwsPublicRouting({ ...company, aws: { ...company.aws, sharedAlb: false } }, services),
         /unknown services/,
@@ -5091,3 +5150,43 @@ test("shared ALB validates company routes while rejecting sibling overlap", () =
     }
   }
 });
+
+for (const shared of [false, true]) {
+  test(`AWS doctor checks ${shared ? "shared" : "dedicated"} discovery through ECS registrations`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "qm-aws-discovery-"));
+    const namespace = shared ? "shared.internal" : "acme.internal";
+    const discoveryName = shared ? "acme-core" : "core";
+    const arn = "arn:aws:servicediscovery:us-west-2:123456789012:namespace/ns-shared";
+    const fake = fakeAws(
+      dir,
+      `
+if (a.includes("list-namespaces")) console.log(JSON.stringify({Namespaces:[{Id:"ns-shared",Name:${JSON.stringify(namespace)},Arn:${JSON.stringify(arn)}}]}));
+else if (a.includes("list-services")) console.log(JSON.stringify({Services:[{Name:${JSON.stringify(discoveryName)},Arn:"arn:registration"}]}));
+else console.log("");`,
+    );
+    try {
+      const endpoint = {
+        portName: "core",
+        discoveryName,
+        clientAliases: [{ dnsName: "core.acme.internal", port: 8080 }],
+      };
+      const connect = { enabled: true, namespace: arn, services: [endpoint] };
+      const services = new Map([
+        ["core", { deployments: [{ status: "PRIMARY", serviceConnectConfiguration: connect }] }],
+      ]);
+      assert.doesNotThrow(() => assertAwsServiceDiscovery(oneServiceConfig(), services));
+      endpoint.clientAliases[0]!.dnsName = "core.other.internal";
+      assert.throws(() => assertAwsServiceDiscovery(oneServiceConfig(), services), /client alias/);
+      endpoint.clientAliases[0]!.dnsName = "core.acme.internal";
+      endpoint.discoveryName = "missing";
+      assert.throws(() => assertAwsServiceDiscovery(oneServiceConfig(), services), /is missing from/);
+      endpoint.discoveryName = discoveryName;
+      connect.namespace = "missing.internal";
+      assert.throws(() => assertAwsServiceDiscovery(oneServiceConfig(), services), /missing Cloud Map namespace/);
+      assert.match(readFileSync(fake.log, "utf8"), /Values=ns-shared/);
+    } finally {
+      fake.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

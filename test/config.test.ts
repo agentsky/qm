@@ -77,7 +77,10 @@ test("production and unauthenticated-core escape hatch are parsed once", () => {
 
 test("harness security posture defaults to auto and validates named modes", () => {
   assert.equal(loadConfig({}).securityPosture, "auto");
-  assert.equal(loadConfig({}).securityScreenBackend, "model");
+  assert.equal(loadConfig({}).securityScreenBackend, "off");
+  assert.equal(loadConfig({ SECURITY_SCREEN_BACKEND: "model" }).securityScreenBackend, "model");
+  assert.equal(loadConfig({ SECURITY_SCREEN_BACKEND: "off" }).securityScreenBackend, "off");
+  assert.throws(() => loadConfig({ SECURITY_SCREEN_BACKEND: "typo" }), /SECURITY_SCREEN_BACKEND/);
   assert.equal(loadConfig({}).securityScreenProxy, undefined);
   assert.equal(loadConfig({}).securityScreenTimeoutMs, 15_000);
   assert.equal(loadConfig({ SECURITY_SCREEN_TIMEOUT_MS: "25" }).securityScreenTimeoutMs, 25);
@@ -211,8 +214,10 @@ test("every boolean knob accepts the shared vocabulary (off means off)", () => {
     REACH_EXEC: "off",
     COMMAND_SCOPED_CREDENTIALS: "off",
     PI_CAPTURE_REQUESTS: "off",
+    EAGER_PROVISION: "off",
   });
   assert.equal(off.seedSkills, false);
+  assert.equal(off.eagerProvisionEnabled, false);
   assert.equal(off.scratchExecEnabled, false);
   assert.equal(off.reachExecEnabled, false);
   assert.equal(off.sharedOwnerAuthIsolation, false);
@@ -234,6 +239,7 @@ test("every boolean knob accepts the shared vocabulary (off means off)", () => {
   const unset = loadConfig({});
   assert.equal(unset.piCaptureRequests, true, "capture defaults on");
   assert.equal(unset.piSystemCacheSplit, false, "cache split defaults off");
+  assert.equal(unset.eagerProvisionEnabled, true, "eager provision defaults on");
 });
 
 test("numEnv: empty and non-numeric values fall back instead of poisoning config with NaN", () => {
@@ -627,6 +633,16 @@ test("the deploy-apps sign-in address defaults to the public web URL", () => {
   });
   assert.equal(derived.deployAppsLoginUrl, "https://qm.example.com");
   assert.equal(derived.deployAppsSessionSecret, "s");
+  assert.equal(derived.deployAppsLoginPath, "/auth/login");
+  assert.equal(
+    loadConfig({
+      DEPLOY_APPS_SESSION_SECRET: "s",
+      PUBLIC_WEB_URL: "https://qm.example.com",
+      DEPLOY_APPS_LOGIN_PATH: "/auth/trusted/login",
+    }).deployAppsLoginPath,
+    "/auth/trusted/login",
+  );
+  assert.throws(() => loadConfig({ DEPLOY_APPS_LOGIN_PATH: "//evil.example" }), /DEPLOY_APPS_LOGIN_PATH/);
   const explicit = loadConfig({
     DEPLOY_APPS_SESSION_SECRET: "s",
     DEPLOY_APPS_LOGIN_URL: "https://portal.example.com/",
@@ -708,4 +724,38 @@ test("suggestion generation defaults on and can be explicitly disabled", () => {
   assert.equal(loadConfig({ SUGGESTED_ACTIVITIES_ENABLED: "true" }).suggestedActivitiesEnabled, true);
   assert.equal(loadConfig({ SUGGESTED_ACTIVITIES_ENABLED: "false" }).suggestedActivitiesEnabled, false);
   assert.throws(() => loadConfig({ SUGGESTED_ACTIVITIES_ENABLED: "maybe" }));
+});
+
+test("sandbox scope defaults parse exact scope kinds and reject malformed mappings", () => {
+  const credentials = {
+    SPRITES_TOKEN: "unit-test-sprites",
+    MODAL_TOKEN_ID: "unit-test-modal-id",
+    MODAL_TOKEN_SECRET: "unit-test-modal-secret",
+  };
+  assert.deepEqual(
+    loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: '{"personal":"modal","channel":"sprites"}' })
+      .sandboxScopeDefaults,
+    { personal: "modal", channel: "sprites" },
+  );
+  for (const value of [
+    "[]",
+    "null",
+    '{"personal:someone":"modal"}',
+    '{"personal":"missing"}',
+    '{"unknown":"sprites"}',
+    '{"personal":""}',
+  ])
+    assert.throws(() => loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: value }));
+});
+
+test("Fly shared application name is passed to the deployment provider", () => {
+  const config = loadConfig({
+    DEPLOY_PROVIDER: "fly",
+    FLY_DEPLOY_SHARED_APP_NAME: "qm-example-apps",
+    FLY_DEPLOY_WIREGUARD_PEERS: "[]",
+    FLY_DEPLOY_API_TOKEN: "test-token",
+    FLY_DEPLOY_DATA_VOLUME_SIZE_GB: "1",
+  });
+  assert.equal(config.flyDeploy.sharedAppName, "qm-example-apps");
+  assert.equal(config.flyDeploy.dataVolumeSizeGb, 1);
 });

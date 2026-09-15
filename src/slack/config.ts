@@ -1,9 +1,25 @@
+import type { Receiver } from "@slack/bolt";
+import type { EnvelopeStaging } from "./envelope-staging.ts";
 import { botIdentityFromEnv } from "./delivery.ts";
 import { normalizeAllowFrom, parseAllowFrom } from "./allow-from.ts";
 
 export const NO_RETRY = { retryConfig: { retries: 0 } } as const;
+export const HISTORY_NO_RETRY = { ...NO_RETRY, rejectRateLimitedCalls: true } as const;
+
+export type SlackContextSource = "live" | "shadow" | "mirror";
+
+export function parseSlackContextSource(value: string | undefined): SlackContextSource {
+  const source = value?.trim() || "live";
+  if (source !== "live" && source !== "shadow" && source !== "mirror")
+    throw new Error("SLACK_CONTEXT_SOURCE must be live, shadow, or mirror");
+  return source;
+}
 
 export interface SlackPluginConfig {
+  contextSource?: SlackContextSource;
+  installationId?: string;
+  sharedServiceUrl?: string;
+  receiverFactory?: (staging?: EnvelopeStaging) => Receiver;
   botToken: string;
   accountId?: string;
   allowFrom?: string[];
@@ -41,11 +57,14 @@ export function parseAckEmoji(raw: string | undefined): string[] {
   return out;
 }
 
-export function slackPluginConfigFromEnv(env: Record<string, string | undefined>): SlackPluginConfig | null {
+export function slackPluginConfigFromEnv(
+  env: Record<string, string | undefined>,
+  receiverFactory?: SlackPluginConfig["receiverFactory"],
+): SlackPluginConfig | null {
   const eventsMode = env.SLACK_EVENTS_MODE?.trim() === "http" ? "http" : "socket";
   if (!env.SLACK_BOT_TOKEN) return null;
-  if (eventsMode === "socket" && !env.SLACK_APP_TOKEN) return null;
-  if (eventsMode === "http" && !env.SLACK_SIGNING_SECRET) return null;
+  if (!receiverFactory && eventsMode === "socket" && !env.SLACK_APP_TOKEN) return null;
+  if (!receiverFactory && eventsMode === "http" && !env.SLACK_SIGNING_SECRET) return null;
   const num = (v: string | undefined): number | undefined => {
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? n : undefined;
@@ -56,6 +75,8 @@ export function slackPluginConfigFromEnv(env: Record<string, string | undefined>
   ): Partial<SlackPluginConfig> => (value === undefined ? {} : ({ [key]: value } as Partial<SlackPluginConfig>));
   return {
     botToken: env.SLACK_BOT_TOKEN,
+    ...(env.SLACK_CONTEXT_SOURCE ? { contextSource: parseSlackContextSource(env.SLACK_CONTEXT_SOURCE) } : {}),
+    ...(receiverFactory ? { receiverFactory } : {}),
     ...opt("appToken", env.SLACK_APP_TOKEN),
     ...opt("apiUrl", env.SLACK_API_URL),
     ...(eventsMode === "http" ? { eventsMode } : {}),
@@ -65,6 +86,7 @@ export function slackPluginConfigFromEnv(env: Record<string, string | undefined>
     ...opt("userToken", env.SLACK_USER_TOKEN),
     ...opt("copilotBotToken", env.SLACK_COPILOT_BOT_TOKEN),
     ...opt("webUiPublicUrl", env.WEB_UI_PUBLIC_URL),
+    ...opt("sharedServiceUrl", env.QM_SLACK_SERVICE_URL),
     ...opt("identityEmail", env.SLACK_IDENTITY_EMAIL),
     ...(() => {
       const allowFrom = parseAllowFrom(env.SLACK_ALLOW_FROM);
@@ -121,7 +143,9 @@ export function slackAccountConfigsFromEnv(env: Record<string, string | undefine
       SLACK_API_URL: str(a.apiUrl),
       SLACK_IDENTITY_EMAIL: str(a.identityEmail) ?? "1",
       SLACK_LOG_LEVEL: env.SLACK_LOG_LEVEL,
+      SLACK_CONTEXT_SOURCE: env.SLACK_CONTEXT_SOURCE,
       WEB_UI_PUBLIC_URL: env.WEB_UI_PUBLIC_URL,
+      QM_SLACK_SERVICE_URL: env.QM_SLACK_SERVICE_URL,
     };
     const config = slackPluginConfigFromEnv(accountEnv);
     if (!config) throw new Error(`SLACK_ACCOUNTS[${i}] ("${id}") is missing required tokens for its events mode`);

@@ -54,12 +54,14 @@ export interface SandboxConfig {
   secretEnv?: string[];
 }
 
-export interface SecurityScreenConfig {
-  backend: "proxy";
-  provider: string;
-  endpoint: string;
-  rollout: "shadow" | "enforce";
-}
+export type SecurityScreenConfig =
+  | { backend: "off" | "model" }
+  | {
+      backend: "proxy";
+      provider: string;
+      endpoint: string;
+      rollout: "shadow" | "enforce";
+    };
 
 export interface AwsServiceConfig {
   ecrRepository: string;
@@ -169,7 +171,7 @@ export interface QmConfig {
 
 export function securityScreenEnv(config: Pick<QmConfig, "securityScreen">): Record<string, string> {
   const screen = config.securityScreen;
-  if (!screen) return {};
+  if (!screen || screen.backend !== "proxy") return { SECURITY_SCREEN_BACKEND: screen?.backend ?? "off" };
   return {
     SECURITY_SCREEN_BACKEND: screen.backend,
     SECURITY_SCREEN_PROXY_PROVIDER: screen.provider,
@@ -420,11 +422,18 @@ const isPlainObject = (x: unknown): x is Record<string, unknown> =>
 function validateSecurityScreen(raw: unknown, path: string): SecurityScreenConfig | undefined {
   if (raw === undefined) return undefined;
   if (!isPlainObject(raw)) throw new CliError(`${path}: "securityScreen" must be an object`);
+  if (raw.backend === "off" || raw.backend === "model") {
+    if (Object.keys(raw).some((key) => key !== "backend")) {
+      throw new CliError(`${path}: securityScreen provider, endpoint, and rollout require backend proxy`);
+    }
+    return { backend: raw.backend };
+  }
   const allowed = new Set(["backend", "provider", "endpoint", "rollout"]);
   for (const key of Object.keys(raw)) {
     if (!allowed.has(key)) throw new CliError(`${path}: "securityScreen.${key}" is not recognized`);
   }
-  if (raw.backend !== "proxy") throw new CliError(`${path}: "securityScreen.backend" must be "proxy"`);
+  if (raw.backend !== "proxy")
+    throw new CliError(`${path}: "securityScreen.backend" must be "off", "model", or "proxy"`);
   if (
     typeof raw.provider !== "string" ||
     raw.provider.length > 63 ||
@@ -627,10 +636,10 @@ function validate(raw: unknown, path: string): QmConfig {
       throw new CliError(`${path}: SECURITY_SCREEN_PROXY_TOKEN may be routed only to core`);
     }
   }
-  if (securityScreen && secretEnv.core?.SECURITY_SCREEN_PROXY_TOKEN === undefined) {
+  if (securityScreen?.backend === "proxy" && secretEnv.core?.SECURITY_SCREEN_PROXY_TOKEN === undefined) {
     throw new CliError(`${path}: securityScreen requires secretEnv.core.SECURITY_SCREEN_PROXY_TOKEN`);
   }
-  if (!securityScreen && secretEnv.core?.SECURITY_SCREEN_PROXY_TOKEN !== undefined) {
+  if (securityScreen?.backend !== "proxy" && secretEnv.core?.SECURITY_SCREEN_PROXY_TOKEN !== undefined) {
     throw new CliError(`${path}: secretEnv.core.SECURITY_SCREEN_PROXY_TOKEN requires securityScreen`);
   }
   for (const [service, values] of Object.entries(env)) {
@@ -928,6 +937,18 @@ export function validatePortalTrust(config: QmConfig, path = "config", secrets?:
   }
 }
 
+export function requiresAwsMicrovmImage(config: QmConfig): boolean {
+  if (config.target !== "aws") return false;
+  const core = config.env.core;
+  if ((core?.DEPLOY_PROVIDER?.trim() || "aws") === "aws") return true;
+  if ((core?.SANDBOX_BACKEND?.trim() || config.sandbox?.backend || "aws") === "aws") return true;
+  const scopes: unknown = JSON.parse(core?.SANDBOX_SCOPE_BACKENDS || "{}");
+  if (!scopes || typeof scopes !== "object" || Array.isArray(scopes)) {
+    throw new CliError("SANDBOX_SCOPE_BACKENDS must be an object");
+  }
+  return Object.values(scopes).some((value) => typeof value === "string" && value.trim() === "aws");
+}
+
 function validateAwsFrontDoor(config: QmConfig, path: string): void {
   const hasPortal = config.services.includes("portal");
   const hasWebUi = config.services.includes("web-ui");
@@ -940,7 +961,10 @@ function validateAwsFrontDoor(config: QmConfig, path: string): void {
     throw new CliError(`${path}: AWS apiUrl must use the same protocol as publicUrl`);
   }
   const deployImage = config.env.core?.AWS_DEPLOY_IMAGE?.trim();
-  if (isMissingOrPlaceholder(deployImage) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(deployImage!)) {
+  if (
+    (requiresAwsMicrovmImage(config) || Boolean(deployImage)) &&
+    (isMissingOrPlaceholder(deployImage) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(deployImage!))
+  ) {
     throw new CliError(
       `${path}: AWS requires env.core.AWS_DEPLOY_IMAGE to name a non-placeholder, stack-owned Lambda MicroVM image`,
     );
@@ -1507,11 +1531,6 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
   }
   if (out.image && !out.app && out.backend !== "local") {
     throw new CliError(`${path}: "sandbox.image" requires "sandbox.app" unless "sandbox.backend" is "local"`);
-  }
-  if (out.backend === "sprites" && !out.app) {
-    throw new CliError(
-      `${path}: "sandbox.backend": ${JSON.stringify(out.backend)} requires "sandbox.app" (the Fly app agents execute in)`,
-    );
   }
   if (SANDBOX_BACKEND_POLICY[target].requireExplicit && out.backend === undefined) {
     throw new CliError(

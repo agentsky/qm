@@ -1,5 +1,4 @@
-const CONNECTOR_REDEEM_RE =
-  /https?:\/\/[^\s)\]]+\/(?:connect\/redeem|v1\/connectors\/oauth\/consent\/redeem)\/[^\s)\]]+/gi;
+const LINK_RE = /https?:\/\/[^\s<>()[\]]+/gi;
 
 export const CONNECTOR_NAMES: Record<string, string> = {
   google: "Google Workspace",
@@ -14,11 +13,17 @@ export const CONNECTOR_NAMES: Record<string, string> = {
 export interface ConnectorLink {
   provider: string;
   url: string;
+  label?: string;
 }
 
 export function connectorLinksIn(text: string, trustedOrigin?: string): ConnectorLink[] {
+  const labels = new Map<string, string>();
+  for (const m of text.matchAll(/\[([^\]\n]*)\]\(\s*<?(https?:\/\/[^\s)>]+)>?\s*\)/gi)) {
+    const label = m[1]!.trim();
+    if (label && !labels.has(m[2]!)) labels.set(m[2]!, label);
+  }
   const out: ConnectorLink[] = [];
-  for (const m of text.matchAll(CONNECTOR_REDEEM_RE)) {
+  for (const m of text.matchAll(LINK_RE)) {
     const url = m[0].replace(/[*_]+$/, "");
     let parsed: URL;
     try {
@@ -26,8 +31,14 @@ export function connectorLinksIn(text: string, trustedOrigin?: string): Connecto
     } catch {
       continue;
     }
-    if (trustedOrigin && parsed.origin !== trustedOrigin) continue;
     if (parsed.username || parsed.password) continue;
+    if (parsed.origin === "https://connect.composio.dev" && /^\/link\/lk_[A-Za-z0-9_-]+$/.test(parsed.pathname)) {
+      const label = labels.get(url);
+      if (!out.some((l) => l.url === url)) out.push({ provider: "composio", url, ...(label ? { label } : {}) });
+      continue;
+    }
+    if (trustedOrigin && parsed.origin !== trustedOrigin) continue;
+    if (!/^\/(?:connect\/redeem|v1\/connectors\/oauth\/consent\/redeem)\/[^/]+$/.test(parsed.pathname)) continue;
     const provider = parsed.searchParams.get("p") ?? "";
     if (!CONNECTOR_NAMES[provider]) continue;
     if (!out.some((l) => l.url === url)) out.push({ provider, url });
@@ -37,16 +48,12 @@ export function connectorLinksIn(text: string, trustedOrigin?: string): Connecto
 
 const EMPH = String.raw`(?:\*\*|\*|__|_)`;
 
-export function stripConnectorLinks(text: string): string {
-  return text
-    .replace(
-      new RegExp(
-        `${EMPH}?\\[[^\\]]*\\]\\(\\s*<?https?:\\/\\/[^\\s)]+\\/(?:connect\\/redeem|v1\\/connectors\\/oauth\\/consent\\/redeem)\\/[^\\s)>]+>?\\s*\\)${EMPH}?`,
-        "gi",
-      ),
-      "",
-    )
-    .replace(new RegExp(`${EMPH}?${CONNECTOR_REDEEM_RE.source}${EMPH}?`, "gi"), "")
-    .replace(/[ \t]+$/gm, "")
-    .trim();
+export function stripConnectorLinks(text: string, links = connectorLinksIn(text)): string {
+  for (const { url } of links) {
+    const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text
+      .replace(new RegExp(`${EMPH}?\\[[^\\]]*\\]\\(\\s*<?${escaped}>?\\s*\\)${EMPH}?`, "g"), "")
+      .replace(new RegExp(`${EMPH}?<?${escaped}(?=$|[\\s<>()[\\]*_])>?${EMPH}?`, "g"), "");
+  }
+  return text.replace(/[ \t]+$/gm, "").trim();
 }

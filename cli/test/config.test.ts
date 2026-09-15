@@ -11,6 +11,7 @@ import {
   loadConfigInDir,
   mockHarnessWarning,
   sandboxCoreEnv,
+  securityScreenEnv,
   updateConfigImageOverrides,
 } from "../src/config.ts";
 
@@ -605,6 +606,26 @@ test("AWS validates release labels, unique coordinates, Fargate sizes, and owned
     networking: { cloudMapNamespace: "acme.internal" },
     services: { core: service },
   };
+  for (const scopeBackend of ["modal", "aws"]) {
+    withConfig(
+      {
+        target: "aws",
+        aws,
+        env: {
+          core: {
+            DEPLOY_PROVIDER: "fly",
+            SANDBOX_BACKEND: "sprites",
+            AWS_DEPLOY_IMAGE: "",
+            SANDBOX_SCOPE_BACKENDS: JSON.stringify({ personal: scopeBackend }),
+          },
+        },
+      },
+      ({ path }) => {
+        if (scopeBackend === "aws") assert.throws(() => loadConfigAt(path), /AWS_DEPLOY_IMAGE/);
+        else assert.equal(loadConfigAt(path).config.env.core?.DEPLOY_PROVIDER, "fly");
+      },
+    );
+  }
   withConfig({ target: "aws", aws }, ({ path }) =>
     assert.equal(loadConfigAt(path).config.aws?.imageLabel, "release-1"),
   );
@@ -933,6 +954,11 @@ test("aws target makes the sandbox substrate explicit: backend required with a s
   });
   withConfig({ target: "aws", aws, sandbox: { backend: "sprites", app: "acme-sandboxes" } }, ({ path }) => {
     assert.equal(loadConfigAt(path).config.sandbox?.backend, "sprites");
+  });
+  withConfig({ target: "aws", aws, sandbox: { backend: "sprites" } }, ({ path }) => {
+    const { config } = loadConfigAt(path);
+    assert.equal(config.sandbox?.backend, "sprites");
+    assert.equal(config.sandbox?.app, undefined);
   });
   withConfig({ target: "aws", aws, sandbox: { backend: "aws" } }, ({ path }) => {
     assert.equal(loadConfigAt(path).config.sandbox?.backend, "aws");
@@ -1265,4 +1291,21 @@ test("blank model provider overrides preserve the declared provider in runtime a
       assert.equal(computedSecrets(config).find((secret) => secret.name === "OPENROUTER_API_KEY")?.required, true);
     },
   );
+});
+
+test("screening defaults off and model screening requires an explicit backend", () => {
+  assert.deepEqual(securityScreenEnv({}), { SECURITY_SCREEN_BACKEND: "off" });
+  for (const backend of ["off", "model"] as const) {
+    withConfig({ securityScreen: { backend } }, ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.deepEqual(securityScreenEnv(config), { SECURITY_SCREEN_BACKEND: backend });
+    });
+    withConfig({ securityScreen: { backend, rollout: "enforce" } }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /require backend proxy/),
+    );
+    withConfig(
+      { securityScreen: { backend }, secretEnv: { core: { SECURITY_SCREEN_PROXY_TOKEN: "TOKEN" } } },
+      ({ path }) => assert.throws(() => loadConfigAt(path), /requires securityScreen/),
+    );
+  }
 });

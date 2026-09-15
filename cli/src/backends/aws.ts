@@ -1,3 +1,4 @@
+import { awsCoreHostnames, awsPortalAppsDomain, validAlbHostname } from "../aws-routing.ts";
 import https from "node:https";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -16,6 +17,7 @@ import {
 import { CliError, dim, errMessage, header, note, ok, step, warn } from "../log.ts";
 import {
   awsWorkloadArchitecture,
+  requiresAwsMicrovmImage,
   isDigestPinned,
   sandboxCoreEnv,
   securityScreenEnv,
@@ -269,6 +271,7 @@ export function guardLambdaMicrovms(e: unknown): never {
 }
 
 function assertAwsDeployImage(config: QmConfig): void {
+  if (!requiresAwsMicrovmImage(config)) return;
   const aws = requireAws(config);
   const { name, version } = deployImageCoordinates(config);
   const expectedArn = `arn:aws:lambda:${aws.region}:${aws.accountId}:microvm-image:${name}`;
@@ -329,7 +332,7 @@ export function serviceEnvironment(config: QmConfig, service: ServiceName): Reco
   if (service === "core") {
     const sandboxBackend = config.env.core?.SANDBOX_BACKEND?.trim() || config.sandbox?.backend;
     const stores = {
-      DEPLOY_PROVIDER: "aws",
+      DEPLOY_PROVIDER: config.env.core?.DEPLOY_PROVIDER?.trim() || "aws",
       AWS_DEPLOY_REGION: aws.region,
       SESSION_STORE: "postgres",
       RUN_STORE: "postgres",
@@ -3120,6 +3123,53 @@ function awsServiceConnectConfiguration(
   );
 }
 
+export function assertAwsServiceDiscovery(
+  config: QmConfig,
+  ecsServices: ReadonlyMap<string, AwsEcsRoutingService>,
+): void {
+  const aws = requireAws(config);
+  const namespaces =
+    awsJson<{ Namespaces?: Array<{ Id?: string; Name?: string; Arn?: string }> }>(aws, [
+      "servicediscovery",
+      "list-namespaces",
+    ]).Namespaces ?? [];
+  let namespaceId: string | undefined;
+  let registrations: Array<{ Arn?: string; Name?: string }> = [];
+  for (const name of deployedAwsServices(aws)) {
+    const ecsService = ecsServices.get(name);
+    const connect = ecsService ? awsServiceConnectConfiguration(ecsService) : undefined;
+    if (!connect?.enabled) throw new Error(`ECS service ${name} does not have Service Connect enabled`);
+    const namespace = namespaces.find((item) => item.Arn === connect.namespace || item.Name === connect.namespace);
+    if (!connect.namespace || !namespace?.Id)
+      throw new Error(`ECS service ${name} references a missing Cloud Map namespace`);
+    if (namespaceId && namespaceId !== namespace.Id)
+      throw new Error("ECS services must share their Service Connect namespace");
+    if (!namespaceId) {
+      namespaceId = namespace.Id;
+      registrations =
+        awsJson<{ Services?: Array<{ Arn?: string; Name?: string }> }>(aws, [
+          "servicediscovery",
+          "list-services",
+          "--filters",
+          `Name=NAMESPACE_ID,Values=${namespaceId},Condition=EQ`,
+        ]).Services ?? [];
+    }
+    const endpoints = connect.services?.filter((service) => service.portName === name) ?? [];
+    if (endpoints.length !== 1)
+      throw new Error(`ECS service ${name} does not publish its named ${name} port through Service Connect`);
+    const endpoint = endpoints[0]!;
+    const discoveryName = endpoint.discoveryName ?? endpoint.portName;
+    if (!registrations.some((service) => service.Name === discoveryName && service.Arn)) {
+      throw new Error(`service ${discoveryName} is missing from ${namespace.Name}`);
+    }
+    const expectedDns = `${name}.${aws.networking.cloudMapNamespace}`;
+    const expectedPort = isServiceName(name) ? serviceDef(name).docker.internalPort : 8080;
+    if (!endpoint.clientAliases?.some((alias) => alias.dnsName === expectedDns && alias.port === expectedPort)) {
+      throw new Error(`ECS service ${name} does not publish the ${expectedDns}:${expectedPort} client alias`);
+    }
+  }
+}
+
 function awsEcsRoutingServices(config: QmConfig): ReadonlyMap<string, AwsEcsRoutingService> {
   const aws = requireAws(config);
   const entries = deployedAwsServices(aws).map((name) => [name, aws.services[name]!] as const);
@@ -3188,13 +3238,6 @@ function awsPublicFrontDoor(config: QmConfig): AwsPublicFrontDoor {
   return { loadBalancerArn: loadBalancer.LoadBalancerArn, dnsName: loadBalancer.DNSName, listener };
 }
 
-const validAlbHostname = (value: string): boolean =>
-  value.length <= 253 &&
-  value.includes(".") &&
-  value
-    .split(".")
-    .every((label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
-
 function assertCloudFrontLayerTarget(config: QmConfig, url: URL, target: string): void {
   interface Distribution {
     DomainName?: string;
@@ -3244,34 +3287,6 @@ function assertCloudFrontLayerTarget(config: QmConfig, url: URL, target: string)
       "AWS deployment-layer HTTPS proxy must be a deployed CloudFront distribution routing directly to the selected ALB without alternate behaviors, origin paths, or edge functions",
     );
   }
-}
-
-function awsCoreHostnames(config: QmConfig): string[] {
-  const hosts: string[] = [];
-  const normalize = (value: string, source: string): string => {
-    const host = value.trim().toLowerCase().replace(/\.$/, "");
-    if (!validAlbHostname(host)) {
-      throw new Error(`${source} ${JSON.stringify(value)} does not derive a valid ALB host-header hostname`);
-    }
-    return host;
-  };
-  const api = config.apiUrl?.trim();
-  if (api) {
-    let hostname: string;
-    try {
-      hostname = new URL(api).hostname;
-    } catch {
-      throw new Error(
-        `apiUrl ${JSON.stringify(api)} is not a valid URL, so the ALB host rule for the core API cannot be derived`,
-      );
-    }
-    const apiHost = normalize(hostname, "apiUrl");
-    if (apiHost !== new URL(config.publicUrl).hostname.toLowerCase().replace(/\.$/, "")) hosts.push(apiHost);
-  }
-  const apps = config.env.core?.DEPLOY_APPS_DOMAIN?.trim() || config.env.core?.AWS_DEPLOY_APPS_DOMAIN?.trim();
-  if (apps)
-    hosts.push(`*.${normalize(apps, "the apps domain (env.core.DEPLOY_APPS_DOMAIN or AWS_DEPLOY_APPS_DOMAIN)")}`);
-  return [...new Set(hosts)];
 }
 
 export function assertAwsPublicRouting(
@@ -3399,17 +3414,42 @@ export function assertAwsPublicRouting(
   let nonDefault = rules.filter((rule) => !rule.IsDefault);
   if (aws.sharedAlb) {
     const hostname = new URL(config.publicUrl).hostname.toLowerCase();
+    const portalAppsDomain = awsPortalAppsDomain(config);
+    const expectedHosts = [hostname, ...(portalAppsDomain ? [`*.${portalAppsDomain}`] : [])];
+    const overlaps = (a: string, b: string): boolean => {
+      if (a === b) return true;
+      if (a.startsWith("*.")) return b.endsWith(a.slice(1));
+      if (b.startsWith("*.")) return a.endsWith(b.slice(1));
+      return false;
+    };
     const ownRule = productionRules.get("portal");
     for (const rule of nonDefault) {
       const hosts = rule.Conditions?.filter((condition) => condition.Field === "host-header");
-      const values = hosts?.[0]?.HostHeaderConfig?.Values ?? hosts?.[0]?.Values ?? [];
-      if (hosts?.length !== 1 || !values.length || values.some((value) => !validAlbHostname(value))) {
-        throw new Error("shared ALB rules require explicit non-wildcard hostnames");
+      const values = (hosts?.[0]?.HostHeaderConfig?.Values ?? hosts?.[0]?.Values ?? []).map((value) =>
+        value.toLowerCase(),
+      );
+      const companyHosts = values.filter((value) => validAlbHostname(value));
+      if (
+        hosts?.length !== 1 ||
+        companyHosts.length !== 1 ||
+        values.some(
+          (value) =>
+            !validAlbHostname(value) &&
+            !(
+              value.startsWith("*.") &&
+              validAlbHostname(value.slice(2)) &&
+              value.slice(2).endsWith(`.${companyHosts[0]}`)
+            ),
+        )
+      ) {
+        throw new Error("shared ALB rules require one company hostname and company-contained app wildcards");
       }
-      const matchesHost = values.some((value) => value.toLowerCase() === hostname);
+      const matchesHost = values.some((value) =>
+        expectedHosts.some((expected) => overlaps(value, expected) || overlaps(expected, value)),
+      );
       if (rule.RuleArn === ownRule) {
-        if (!matchesHost || values.length !== 1)
-          throw new Error("shared ALB portal rule must match only this company hostname");
+        if (values.length !== expectedHosts.length || expectedHosts.some((value) => !values.includes(value)))
+          throw new Error("shared ALB portal rule must match only this company and its configured app hostname");
       } else {
         const referencesOwnTarget = rule.Actions?.some(
           (action) =>
@@ -3853,36 +3893,7 @@ export async function awsDoctor(config: QmConfig, configDir: string): Promise<vo
       }
     });
   }
-  check("Cloud Map routing", () => {
-    const namespaces =
-      awsJson<{ Namespaces?: Array<{ Id?: string; Name?: string }> }>(aws, ["servicediscovery", "list-namespaces"])
-        .Namespaces ?? [];
-    const namespace = namespaces.find((item) => item.Name === aws.networking.cloudMapNamespace);
-    if (!namespace?.Id) throw new Error(`namespace ${aws.networking.cloudMapNamespace} is missing`);
-    const services =
-      awsJson<{ Services?: Array<{ Arn?: string; Name?: string }> }>(aws, [
-        "servicediscovery",
-        "list-services",
-        "--filters",
-        `Name=NAMESPACE_ID,Values=${namespace.Id},Condition=EQ`,
-      ]).Services ?? [];
-    for (const name of deployedAwsServices(aws)) {
-      const discovery = services.find((service) => service.Name === name);
-      if (!discovery?.Arn) throw new Error(`service ${name} is missing from ${aws.networking.cloudMapNamespace}`);
-      const ecsService = ecsServices.get(name);
-      const connect = ecsService ? awsServiceConnectConfiguration(ecsService) : undefined;
-      if (!connect?.enabled) throw new Error(`ECS service ${name} does not have Service Connect enabled`);
-      const endpoint = connect.services?.find((service) => service.discoveryName === name);
-      const expectedDns = `${name}.${aws.networking.cloudMapNamespace}`;
-      const expectedPort = isServiceName(name) ? serviceDef(name).docker.internalPort : 8080;
-      if (endpoint?.portName !== name) {
-        throw new Error(`ECS service ${name} does not publish its named ${name} port through Service Connect`);
-      }
-      if (!endpoint.clientAliases?.some((alias) => alias.dnsName === expectedDns && alias.port === expectedPort)) {
-        throw new Error(`ECS service ${name} does not publish the ${expectedDns}:${expectedPort} client alias`);
-      }
-    }
-  });
+  check("Cloud Map routing", () => assertAwsServiceDiscovery(config, ecsServices));
   check("ALB routing", () => assertAwsPublicRouting(config, ecsServices));
   await checkAsync("public URL DNS and TLS", () => assertAwsPublicNetwork(config));
   const runtimeSecrets = new Map<string, string>();

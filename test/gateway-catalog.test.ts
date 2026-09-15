@@ -1,3 +1,4 @@
+import { runtimeFallback } from "../src/api/runtime-config.ts";
 import { validateWebTurnModelOptions } from "../src/core/turn-options.ts";
 import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
 import { resolveRuntimeChoice } from "../src/harness/harness-router.ts";
@@ -228,4 +229,62 @@ test("removed gateway selections never fall back to a different org or direct mo
   store.setRuntimeSelection(org, fallback);
   store.setRuntimeSelection(personal, { harnessId: "pi", modelId: "gateway/removed" });
   assert.throws(() => resolveRuntimeChoice(store, org, personal, fallback), /Gateway model is unavailable/);
+});
+
+test("gateway aliases hide duplicate picker options while preserving saved routes", async () => {
+  const target = "anthropic/claude-opus-5";
+  const f = fixture([group(target)], { "claude-opus-5": target });
+  await f.catalog.refresh();
+  const ids = builtInModelCatalog().map((m) => m.id);
+  assert.ok(ids.includes("claude-opus-5"));
+  assert.ok(!ids.includes(`gateway/${target}`));
+  for (const id of ["claude-opus-5", `gateway/${target}`]) {
+    assert.equal(modelGatewayRequest(f.catalog.transport, resolveModel(id)!)?.target, target);
+    assert.equal(
+      validateWebTurnModelOptions({ model: id }, null, {
+        anthropic: false,
+        openai: false,
+        openrouter: false,
+        modelIds: new Set([id]),
+      }),
+      null,
+    );
+  }
+  f.listing([]);
+  f.tick();
+  await f.catalog.refresh();
+  assert.equal(f.catalog.transport.models["claude-opus-5"], undefined);
+  assert.equal(resolveModel(`gateway/${target}`), undefined);
+});
+
+test("unknown aliases do not hide the usable discovered model", async () => {
+  const f = fixture([group()], { "unknown-alias": "vendor/new-model" });
+  await f.catalog.refresh();
+  assert.ok(builtInModelCatalog().some((m) => m.id === "gateway/vendor/new-model"));
+});
+
+test("resolvable aliases outside the picker do not hide discovered models", async () => {
+  assert.ok(resolveModel("gpt-4o"));
+  const f = fixture([group("openai/gpt-4o")], { "gpt-4o": "openai/gpt-4o" });
+  await f.catalog.refresh();
+  assert.ok(builtInModelCatalog().some((m) => m.id === "gateway/openai/gpt-4o"));
+});
+
+test("gateway-only fallback retains models hidden by picker aliases", async () => {
+  const target = "openai/gpt-5.6-sol";
+  const f = fixture([group(target)], { "gpt-5.6-sol": target });
+  await f.catalog.refresh();
+  assert.ok(!builtInModelCatalog().some((model) => model.id === `gateway/${target}`));
+  const fallback = runtimeFallback({
+    deps: { harnessId: "pi", providerKeys: { anthropic: false, openai: false, openrouter: false } },
+  });
+  assert.equal(fallback.modelId, `gateway/${target}`);
+  assert.ok(
+    modelServiceable(fallback.modelId, {
+      anthropic: false,
+      openai: false,
+      openrouter: false,
+      modelIds: new Set([`gateway/${target}`]),
+    }),
+  );
 });
