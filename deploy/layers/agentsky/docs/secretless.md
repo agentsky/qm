@@ -147,9 +147,10 @@ below:
   the CLI has no Kubernetes target to render it with[^clibackends]. A1 closes
   that.
 - Two reads the split's routing table surfaced stay in the inventory:
-  egress-proxy reads `DATABASE_URL`, `CAPABILITY_SECRET`, and
-  `CORE_SIGNING_SECRET` while the CLI does not know the service exists, and
-  core reads `PORTAL_SESSION_SECRET` as the fallback for an undeclared
+  egress-proxy reads `CAPABILITY_SECRET` and `CORE_SIGNING_SECRET` (and
+  `DATABASE_URL` only as a fallback audit sink the chart never leaves it
+  with) while the CLI does not know the service exists, and core reads
+  `PORTAL_SESSION_SECRET` as the fallback for an undeclared
   `DEPLOY_APPS_SESSION_SECRET`.
 - Per-surface identity in Phase B1 would have bought nothing while every
   surface held every secret. That is why the split lands first.
@@ -220,7 +221,7 @@ Tiers are defined in the next section.
 | Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer`      | cert-manager issues and rotates                                                                                          | 0     |
 | `CORE_SIGNING_SECRET`                                                                                            | core, portal, web-ui, egress-proxy | shared static HMAC                                                                                                       | 1     |
 | `PORTAL_IDENTITY_SECRET`                                                                                         | core, portal, web-ui               | shared static HMAC, portal mints                                                                                         | 1     |
-| `DATABASE_URL`                                                                                                   | core, egress-proxy                 | static password, no rotation path                                                                                        | 1     |
+| `DATABASE_URL`                                                                                                   | core                               | static password, no rotation path                                                                                        | 1     |
 | `PORTER_DEPLOY_API_TOKEN`                                                                                        | core                               | Admin-role token; used for sandboxes and for app publishing[^porterboth]                                                 | 1     |
 | `NPM_TOKEN`                                                                                                      | `publish-cli.yml:89`               | static automation token                                                                                                  | 1     |
 | `imagePullSecrets`                                                                                               | `values.yaml`                      | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                              | 1     |
