@@ -293,7 +293,7 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
   if (intendedPrincipalId && !samePerson(intendedPrincipalId, capability.actorId)) {
     const selfConnect = deps.portalUrl
       ? `send them ${deps.portalUrl.replace(/\/$/, "")}/connect/${encodeURIComponent(provider)}/self-connect (no token needed; signing in there is what identifies them)`
-      : "tell them to open the Connectors page in the org's web UI and connect it themselves";
+      : "ask them to connect it themselves — a consent link only ever identifies the person who signs in with it";
     return sendJson(res, 400, {
       error: "bad_request",
       message: `consent links are only mintable for yourself — to get someone else connected, ${selfConnect}`,

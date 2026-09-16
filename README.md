@@ -1,8 +1,6 @@
 # qm
 
-A multiplayer agent harness for work. In Slack and on the web.
-
-![The QM web UI: a conversation about Victor Hugo, with personal sessions and workspace tools in the sidebar](./docs/screenshots/web-ui-hero.png)
+A multiplayer agent harness for work, in Slack.
 
 ## Setup
 
@@ -68,9 +66,8 @@ flowchart LR
 ```
 
 For durability, set `DATABASE_URL` and `SESSION_STORE=postgres` — without it, sessions
-live in process memory and vanish on restart. To exercise a branch end to end — core,
-Slack, web, admin, against a real model and real Postgres — run
-`npm run dev-instance`.
+live in process memory and vanish on restart. To exercise a branch end to end — core and
+Slack, against a real model and real Postgres — run `npm run dev-instance`.
 
 ## Architecture
 
@@ -78,13 +75,12 @@ Every turn runs through a central core, which can use a variety of models and ha
 to generate the response. A Postgres persistence layer holds user data, session history,
 and other durable state. The agent has a small, fixed tool surface; one of those tools is
 `execute`, which runs commands in the scope's own isolated sandbox — its durable computer,
-where installed tools stay installed. The web UI and admin panel share one service, which
-communicates with core over its HTTP API.
-Slack is an optional in-process plugin that core starts
+where installed tools stay installed. Core exposes an HTTP API that any surface or
+integration can call. Slack is an optional in-process plugin that core starts
 and supervises through a direct service client.
 
 The core runs TypeScript directly on Node and uses Fastify for HTTP. The Slack plugin
-uses Bolt; the web UI builds with Vite and renders with Lit.
+uses Bolt.
 
 The core itself is generic. Everything specific to one company — org config, custom tools
 and skills, sandbox image, infrastructure — lives in the Helm values and deployment layer
@@ -239,7 +235,7 @@ it prepares a clean upstream branch without private deployment data or history.
 - [`deploy/README.md`](./deploy/README.md) — the images, the Helm chart, and the deployment layer
 - [`docs/helm-per-service-secrets.md`](./docs/helm-per-service-secrets.md) — per-service secret scoping
 - [`.env.example`](./.env.example) — every knob, documented in place
-- [`plugins/`](./plugins) — the surfaces (Slack, web UI, admin)
+- [`src/slack/`](./src/slack) — the Slack surface
 
 ## License
 
@@ -249,11 +245,11 @@ Except where otherwise noted, QM is available under the [MIT License](./LICENSE)
 
 A hosting provider can set `QM_SLACK_SERVICE_URL` (HTTPS),
 `QM_SLACK_SERVICE_TOKEN` (unique per deployment), and `QM_SLACK_APP_ID` on core.
-Set `QM_SLACK_SERVICE_URL` on the admin/web service as well so its browser policy allows the installation form.
-The admin Slack card then offers **Add to Slack** through that service. Core calls
-`POST /install/start` with the deployment bearer credential and expects `{ "url":
-"https://<service>/..." }`. The browser submits a POST form to that URL; the service must validate its Origin against the company URL. The service owns browser-bound OAuth state, Slack
-signature verification, workspace ownership, and app credentials.
+Core's Slack installation admin route then offers **Add to Slack** through that service.
+Core calls `POST /install/start` with the deployment bearer credential and expects
+`{ "url": "https://<service>/..." }`. A browser submits a POST form to that URL; the
+service must validate its Origin against the company URL. The service owns browser-bound
+OAuth state, Slack signature verification, workspace ownership, and app credentials.
 
 Whatever fronts core must expose `POST /v1/slack/managed/installation`, `DELETE` on
 that same path, and `POST /v1/slack/managed/events` without a browser session. Core

@@ -3,7 +3,7 @@
 A swarm coordinates ordinary QM sessions. The initiating session is its root;
 workers have their own durable transcripts, runs, identity, and editable JSON
 character/context. The existing authenticated session viewer lists worker sessions
-with a `Swarm worker` title. Worker transcripts remain read-only for ordinary messages in the web UI, but the requesting human can allow or deny pending approvals there. Discovery returns their session IDs and
+with a `Swarm worker` title. Worker transcripts stay read-only for ordinary messages, but the requesting human can allow or deny their pending approvals. Discovery returns their session IDs and
 `sessionUrl` links relative to the deployment's public web origin. Session activity and results use the normal viewer and run APIs.
 
 ## Deployment

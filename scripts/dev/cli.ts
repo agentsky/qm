@@ -85,7 +85,7 @@ const commandOptions: Record<string, readonly string[]> = {
   ci: [],
 };
 
-const devServiceNames = [...CHILD_ORDER, "web-ui"];
+const devServiceNames = [...CHILD_ORDER];
 
 const allowedOptions = commandOptions[command];
 if (allowedOptions) {
@@ -121,7 +121,7 @@ const withSlack = !opts["no-slack"] && process.env.DEV_INSTANCE_NO_SLACK !== "1"
 const devCallerEnv = (): Record<string, string> => ({ ...callerEnvSnapshot(), DEV_INSTANCE_ORG_ID: orgId });
 
 async function legacyTeardown(lease: LeaseInfo): Promise<void> {
-  for (const name of ["admin", "web", "web-build", "slack", "core", "tunnel", "supervisor"]) {
+  for (const name of ["slack", "core", "tunnel", "supervisor"]) {
     const pid = readPidFile(lease.lockDir, `${name}.pid`);
     if (pid) await killTree(pid, 5000);
   }
@@ -216,8 +216,6 @@ async function bootOnSlot(slot: string, worktree: string, branch: string): Promi
       `worktree=${worktree}`,
       `branch=${branch}`,
       `port=${ports.core}`,
-      `web_port=${ports.web}`,
-      `admin_port=${ports.admin}`,
       `slack=${withSlack ? "1" : "0"}`,
       "booting=1",
       `owner_pid=${process.pid}`,
@@ -309,9 +307,7 @@ function printSuccess(result: BootResult, branch: string): void {
     `   core   : http://localhost:${ports.core}  (org=${orgId}, session_store=${meta.session_store}, run_store=${meta.run_store})`,
   );
   if (slackLive) out(`   slack  : @${result.handle}  -> mention it in example.slack.com to test`);
-  out(`   web    : http://localhost:${ports.web}/`);
-  out(`   admin  : http://localhost:${ports.web}/admin/`);
-  out(`   logs   : ${lock}/{core,web,supervisor}.log`);
+  out(`   logs   : ${lock}/{core,supervisor}.log`);
   out(`   status : dev status   |   diagnose: dev doctor   |   apply env/code changes: dev up (reloads in place)`);
   out(`   down   : dev down   (auto-reaped if this worktree is removed)`);
 }
@@ -446,7 +442,7 @@ async function cmdDown(): Promise<number> {
   await teardownLease(mine);
   const residue: string[] = [];
   for (const [name, port] of Object.entries(slotPorts(slot))) {
-    if (name === "supervisor" || name === "prodProxy") continue;
+    if (name === "supervisor") continue;
     const holders = portHolders(port);
     if (holders.length) residue.push(`port ${port} (${name}) still held by pid(s) ${holders.join(",")}`);
   }
@@ -545,7 +541,7 @@ async function cmdStatus(): Promise<number> {
       [
         String(r.slot).padEnd(7),
         state.padEnd(18),
-        `${ports.core}/${ports.web}/${ports.admin}`.padEnd(21),
+        String(ports.core).padEnd(21),
         age.padEnd(8),
         (r.mine ? "this" : "").padEnd(5),
         String(r.branch ?? "-").padEnd(28),
@@ -572,12 +568,8 @@ async function withMySupervisor<T>(fn: (sock: string, lease: LeaseInfo) => Promi
   return await fn(sock, mine);
 }
 
-const supervisorChildNames = (names: string[]): string[] => [
-  ...new Set(names.map((name) => (name === "web-ui" ? "web" : name))),
-];
-
 async function cmdRestart(): Promise<number> {
-  const children = supervisorChildNames(positionals.slice(1));
+  const children = [...new Set(positionals.slice(1))];
   const res = await withMySupervisor((sock) =>
     supervisorRequest(sock, "POST", "/restart", { children: children.length ? children : undefined }, 180_000),
   );
@@ -608,7 +600,7 @@ async function cmdLogs(): Promise<number> {
     out("no dev instance for this worktree.");
     return EXIT.ok;
   }
-  const names = positionals.length > 1 ? supervisorChildNames(positionals.slice(1)) : [...CHILD_ORDER, "supervisor"];
+  const names = positionals.length > 1 ? [...new Set(positionals.slice(1))] : [...CHILD_ORDER, "supervisor"];
   const files = names.map((n) => join(mine.lockDir, `${n}.log`)).filter((f) => existsSync(f));
   if (opts.follow) {
     const child = spawn("tail", ["-f", ...files], { stdio: "inherit" });

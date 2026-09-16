@@ -728,7 +728,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/connectors/oauth/consent/mint",
         summary:
-          "mint a chat-first connect link for an OAuth provider, for YOURSELF (the current actor) only — use $AGENT_OAUTH_CONSENT_TOKEN. To get anyone else connected, don't mint anything: point them at the durable /connect/<provider>/self-connect page on the org's web UI, where signing in as themselves is the identity (no token; a refused mint's error message carries the full URL). A new login stays private to its owner; using it in a shared conversation requires a separate explicit credential grant.",
+          "mint a chat-first connect link for an OAuth provider, for YOURSELF (the current actor) only — use $AGENT_OAUTH_CONSENT_TOKEN. To get anyone else connected, don't mint anything: they have to connect themselves, because signing in as themselves is the identity (no token; a refused mint's error message carries the durable /connect/<provider>/self-connect URL when the deployment has one). A new login stays private to its owner; using it in a shared conversation requires a separate explicit credential grant.",
       },
       {
         method: "POST",

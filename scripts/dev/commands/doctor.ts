@@ -182,7 +182,7 @@ export async function runDoctor(opts: { json: boolean; fix: boolean; store: stri
       const lease = listLeases(opts.store).find((l) => l.slot === slot);
       if (lease) continue;
       for (const [name, port] of Object.entries(slotPorts(slot))) {
-        if (name === "supervisor" || name === "prodProxy" || name === "slackHealth") continue;
+        if (name === "supervisor" || name === "slackHealth") continue;
         const holders = portHolders(port);
         if (holders.length) {
           checks.push({

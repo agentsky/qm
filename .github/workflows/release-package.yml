@@ -19,10 +19,6 @@ jobs:
         include:
           - name: core
             dockerfile: deploy/core/Dockerfile
-          - name: web-ui
-            dockerfile: deploy/web-ui/Dockerfile
-          - name: admin
-            dockerfile: deploy/admin/Dockerfile
           - name: egress-proxy
             dockerfile: deploy/egress-proxy/Dockerfile
           - name: sandbox-base

@@ -100,12 +100,12 @@ flagged, oversized, or unavailable screening leaves the carried skill inaccessib
 
 ### Deliberately human-surface-only actions
 
-Three actions are intentionally excluded from the agent self-API, even though the
-web surfaces offer them. They look like capability-parity gaps in an audit; they are
+Three actions are intentionally excluded from the agent self-API, even though a human
+surface may offer them. They look like capability-parity gaps in an audit; they are
 walls, not gaps, and should not be "fixed" without revisiting the reasoning here.
 Reaching them requires a signed identity assertion: a request carries the user in an
-`x-portal-identity` header that core, web-ui, and admin each verify under
-`PORTAL_IDENTITY_SECRET`, and an agent never holds that key.
+`x-portal-identity` header that core verifies under `PORTAL_IDENTITY_SECRET`, and an
+agent never holds that key.
 
 - **Admin grant changes.** Granting or revoking org-admin rights happens only on a
   human surface, on an authenticated admin's own turn. If the agent could change
@@ -179,7 +179,7 @@ these, not through them.
   changes do not revoke individual link holders.
 - **Signed identity assertions have residual risk.** The `x-portal-identity` header
   is a bearer assertion verified against a shared symmetric key, so any holder of
-  that key can mint one and every verifier accepts exactly one key value. An
+  that key can mint one and core accepts exactly one key value. An
   assertion is valid until it expires; nothing revokes one already issued, and
   rotating the key is a fleet-wide event with no overlap window.
 - **Some model-provider paths bypass the intended gateway.** The ambient Slack judge's

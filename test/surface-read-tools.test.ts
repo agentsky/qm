@@ -298,7 +298,7 @@ test("search source=slack with no connected login for the asker tells the agent 
     await built.app.turn(mention("!search source=slack budget", "C32", "3200.1"));
     const reply = await subToolResult(built, root, "search");
     assert.match(reply, /no connected one/, "the miss explains the missing login");
-    assert.match(reply, /self-connect|Connectors page/, "and points at the session-gated self-connect page");
+    assert.match(reply, /self-connect|connect their own Slack/, "and tells the agent to have them connect it");
   } finally {
     running = false;
     await loop;

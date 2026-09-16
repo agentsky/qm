@@ -24,8 +24,7 @@ minted once by a human and injected as process environment for the life of the
 deployment.
 
 The deployment this plan is for is **Kubernetes**, through the Helm chart at
-`deploy/helm/`, which renders three workloads: core, web-ui with admin inside
-it, and egress-proxy. The bar is: workload identity federation wherever a
+`deploy/helm/`, which renders two workloads: core and egress-proxy. The bar is: workload identity federation wherever a
 relying party accepts an assertion, External Secrets Operator (ESO) everywhere
 else, and in every case rotation that runs without a human.
 
@@ -95,10 +94,8 @@ graph TB
 
   subgraph Runtime["Runtime plane on Kubernetes"]
     SecC[("core-env")]
-    SecW[("web-ui-env")]
     SecE[("egress-proxy-env")]
     Core["core"]
-    Web["web-ui + admin"]
     Egress["egress-proxy"]
     PG[("Postgres")]
     Vendors["model provider<br/>Slack, connectors<br/>sandbox vendors"]
@@ -107,12 +104,10 @@ graph TB
   GHA -->|"github.token — ephemeral"| GHCR
   GHA -->|"Fulcio keyless signature — ephemeral"| GHCR
   Helm -->|"routed per service"| SecC
-  Helm -->|"routed per service"| SecW
   Helm -->|"routed per service"| SecE
   SecC -->|"envFrom"| Core
-  SecW -->|"envFrom"| Web
   SecE -->|"envFrom"| Egress
-  Web <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
+  Egress <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
   Egress <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
   Core -->|"password in connection string"| PG
   Core -->|"static API keys"| Vendors
@@ -144,33 +139,34 @@ What the split leaves for the phases below:
   `DATABASE_URL` only as a fallback audit sink the chart never leaves it
   with), and core reads `DEPLOY_APPS_SESSION_SECRET`, which no declaration
   list mentions.
-- Per-surface identity in Phase B1 would have bought nothing while every
-  surface held every secret. That is why the split lands first.
+- Per-workload identity in Phase B1 would have bought nothing while every
+  workload held every secret. That is why the split lands first.
 
 ### The service-to-service case
 
 `CORE_SIGNING_SECRET` is a single symmetric HMAC key shared by core and _every_
-surface — `web-ui`, `admin`, `slack`, the egress proxy, and any plugin the
-deployment adds. The chassis reads it from process environment and signs every
-core call with it[^chassis].
+caller — the egress proxy, and any surface or integration the deployment puts in
+front of core. A caller reads it from process environment and signs every core
+call with it[^chassis].
 
 The consequences are structural, not hypothetical:
 
 - Verification is symmetric, so any holder can forge any other holder's
-  requests. A compromised `admin` container can sign as `web-ui`.
+  requests. A compromised `egress-proxy` container can sign as any surface.
 - The signature carries no caller identity[^sourceauth]. Core cannot tell which
-  surface called it, only that _a_ holder did.
+  caller called it, only that _a_ holder did.
 - Rotation is a fleet-wide atomic event. There is no overlap window, because
   there is one key and one value.
 
 `PORTAL_IDENTITY_SECRET` has the same shape in the same direction, minus a
-producer. Core, web-ui, and admin all verify a signed user identity carried in
+producer. Core verifies a signed user identity carried in
 the `x-portal-identity` header[^portalverify], and the portal that used to mint
 it has been removed with the rest of the proprietary deployment paths. It is a
 genuinely distinct key — core refuses to start in production if it is unset or
 equal to `CORE_SIGNING_SECRET` or `CAPABILITY_SECRET`[^portalguard] — but it is
-still symmetric, still shared across three services, and still rotated
-atomically — and since the portal's removal nothing signs that header with it. The verifier is the
+still symmetric, still shared with whatever is put in front of core, and still
+rotated atomically — and since the portal's removal nothing signs that header
+with it. The verifier is the
 seam a future identity source at the ingress has to satisfy, which is why B1
 treats filling that gap as part of its work rather than as someone else's.
 
@@ -204,8 +200,8 @@ Tiers are defined in the next section.
 | GHCR push                                                                                                        | `release-package.yml`         | `github.token`, per-job                                                                                                                              | 0    |
 | Cosign signing key                                                                                               | `release-package.yml`         | keyless, Fulcio + OIDC                                                                                                                               | 0    |
 | Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer` | cert-manager issues and rotates                                                                                                                      | 0    |
-| `CORE_SIGNING_SECRET`                                                                                            | core, web-ui, egress-proxy    | shared static HMAC                                                                                                                                   | 1    |
-| `PORTAL_IDENTITY_SECRET`                                                                                         | core, web-ui, admin           | shared static HMAC, verified everywhere and minted nowhere since the portal was removed                                                              | 1    |
+| `CORE_SIGNING_SECRET`                                                                                            | core, egress-proxy            | shared static HMAC                                                                                                                                   | 1    |
+| `PORTAL_IDENTITY_SECRET`                                                                                         | core                          | static HMAC, verified by core and minted nowhere since the portal was removed                                                                        | 1    |
 | `DATABASE_URL`                                                                                                   | core                          | static password, no rotation path                                                                                                                    | 1    |
 | `imagePullSecrets`                                                                                               | `values.yaml`                 | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                                                          | 1    |
 | `ANTHROPIC_API_KEY`                                                                                              | core                          | static vendor key; Anthropic WIF is GA                                                                                                               | 1    |
@@ -335,7 +331,7 @@ rule requires anyway.
 that makes rotation safe. The naive form — each verifier accepts current plus
 previous and signs with the first — is not enough. It handles an old signature
 reaching an updated verifier; it does not handle a new signature reaching a
-verifier that has not updated yet. A web-ui that has refreshed to `[K1, K0]`
+verifier that has not updated yet. A caller that has refreshed to `[K1, K0]`
 signs with `K1`; a core replica still on `[K0, K−1]` cannot verify it. The same
 ordering breaks cookie verification between replicas and leaves a row encrypted
 by an updated writer unreadable by an older reader. File-mounted delivery
@@ -364,13 +360,13 @@ it, and nothing in the tree reports that today.
 ### Phase B1: per-workload identity
 
 Replace the shared HMAC with a per-workload assertion that core verifies without
-a shared key. The workloads are core, web-ui with admin inside it, and
-egress-proxy.
+a shared key. The workloads are core and egress-proxy, plus whatever surface the
+deployment puts in front of core.
 
-| Substrate      | Mechanism                                                                                                                                                                                                                                                                   | Secret material |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| **Kubernetes** | Each surface gets its own ServiceAccount and a projected token volume with `audience: qm-core` and a short `expirationSeconds`. The kubelet rotates it. The surface sends it as a bearer; core verifies through the `TokenReview` API or the cluster issuer's JWKS, cached. | none            |
-| Docker         | HMAC path kept, selected by the same `federation` field. Local development stays here.                                                                                                                                                                                      | shared key      |
+| Substrate      | Mechanism                                                                                                                                                                                                                                                                     | Secret material |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| **Kubernetes** | Each workload gets its own ServiceAccount and a projected token volume with `audience: qm-core` and a short `expirationSeconds`. The kubelet rotates it. The workload sends it as a bearer; core verifies through the `TokenReview` API or the cluster issuer's JWKS, cached. | none            |
+| Docker         | HMAC path kept, selected by the same `federation` field. Local development stays here.                                                                                                                                                                                        | shared key      |
 
 **Bearer mode has a transport prerequisite that HMAC mode does not.** The
 chart wires every inter-service URL as plain `http://`[^plainhttp], and the
@@ -402,37 +398,37 @@ rejection are different outcomes and are handled differently.
 ```mermaid
 sequenceDiagram
   autonumber
-  participant W as web-ui pod
+  participant W as surface pod
   participant K as kubelet
   participant Core as core
   participant API as kube-apiserver
 
-  Note over W: ServiceAccount web-ui<br/>projected token, aud qm-core, 15 min
+  Note over W: its own ServiceAccount<br/>projected token, aud qm-core, 15 min
   K-->>W: token file rotated before expiry
   W->>Core: GET /v1/surface-config<br/>Authorization: Bearer token
   Core->>API: TokenReview
-  API-->>Core: authenticated, system:serviceaccount:ns:web-ui
+  API-->>Core: authenticated, system:serviceaccount:ns:surface
   Core->>Core: map SA to surface, authorize
   Core-->>W: 200
 ```
 
 Concretely for the chart: `serviceAccount` in `values.yaml` is one SA for every
 workload[^helmsa], so B1 is per-service ServiceAccounts in
-`templates/serviceaccount.yaml`. The chassis needs one more auth mode next to
+`templates/serviceaccount.yaml`. Callers need one more auth mode next to
 HMAC that reads the token from the projected file, and core needs a
 `TokenReview` verifier next to `verifySignature`. Core's own SA needs one RBAC
 grant to create `TokenReview`s.
 
 What this buys, beyond deleting a secret:
 
-- Core learns _which_ surface is calling and can authorize per-surface. The
-  `admin` container can no longer sign as `web-ui`.
+- Core learns _which_ workload is calling and can authorize per-workload. The
+  egress proxy can no longer sign as a surface.
 - Tokens expire on their own and the kubelet rotates them. Nothing is minted,
   stored, or rotated by anyone.
 - The mechanism exists today with zero new infrastructure.
 
 **`PORTAL_IDENTITY_SECRET` is the gap B1 has to close, not just a key it
-deletes.** Core, web-ui, and admin all verify the `x-portal-identity` header
+deletes.** Core verifies the `x-portal-identity` header
 under that key[^portalverify]; the portal that minted it was removed with the
 proprietary deployment paths, so the deployment currently has a verifier with no
 producer and user identity has to arrive some other way. Per-workload identity
@@ -447,23 +443,23 @@ a symmetric signing key for this.
 
 **Delegation through intermediaries is a separate decision, and this is
 it.** "The calling ServiceAccount asserts the user" covers the ingress to core.
-It does not cover web-ui or admin to core, which is how every admin operation
-and every web-ui request reaches core today: the intermediary verifies the
-identity header, then calls core under its own source authentication and
-forwards the user assertion beside it[^delegation]. The user assertion and the
-immediate caller's identity are two pieces of evidence and core checks both.
+It does not cover an intermediary surface to core, which is how a browser-borne
+operation reaches core: the intermediary verifies the identity header, then
+calls core under its own source authentication and forwards the user assertion
+beside it[^delegation]. The user assertion and the immediate caller's identity
+are two pieces of evidence and core checks both.
 Deleting the assertion without a replacement leaves three options: reject
-forwarded operations, trust web-ui and admin to assert any user, or forward the
-ingress's own bearer. The second grants two more services impersonation
-authority, and the third contradicts per-surface identity and binds no user
+forwarded operations, trust every intermediary to assert any user, or forward
+the ingress's own bearer. The second grants each intermediary impersonation
+authority, and the third contradicts per-workload identity and binds no user
 claims to the token. So neither.
 
 The replacement is a **user capability minted by core**. The ingress workload,
 having authenticated a user, calls core under its ServiceAccount token and
 receives a short-lived capability that binds the user, the organization, the
 human impersonator when an admin is acting as someone else (today's `imp`
-claim[^impclaim], which stays a human and never names a service), the set of
-ServiceAccounts allowed to present it (its audience: web-ui and admin), an
+claim, which stays a human and never names a service), the set of
+ServiceAccounts allowed to present it (its audience: the intermediaries), an
 expiry, and a `jti`. It carries no operation scope. The ingress proxies
 requests without parsing them, so it cannot know what an intermediary will
 ask for, and core authorizes each operation against the user exactly as it
@@ -477,7 +473,7 @@ capability and skips the user-actor path[^capgate]. Intermediaries forward
 the capability unchanged with their own ServiceAccount bearer, and core
 verifies three things: the capability's signature and expiry, that the
 presenting ServiceAccount is in its audience, and the presenter's own
-identity through `TokenReview`. Web-ui and admin never hold an ingress token
+identity through `TokenReview`. An intermediary never holds an ingress token
 and cannot mint a capability. The acceptance tests are the things an
 intermediary must not be able to do: change the user or the impersonator,
 present a capability whose audience names another surface, or act as the
@@ -795,7 +791,7 @@ validated, routed, or rotated.
 
 Core resolves a connector's client credentials in two steps: the durable
 connector store first, then `SecretSource`[^clientresolver]. The store is the
-admin-UI path — per-org, encrypted with `CONNECTOR_SECRET_KEY`. The fallback is
+admin-API path — per-org, encrypted with `CONNECTOR_SECRET_KEY`. The fallback is
 the one place `SecretSource` is wired today, which means the ESO path already
 exists: an `ExternalSecret` syncs the client secret from the cloud secret
 manager into core's own `Secret`, mounted as a file, and the Phase A seam reads
@@ -806,12 +802,12 @@ resolver is automatic and restart-free.
 Three things follow.
 
 **The store must not shadow ESO.** A durable-store record wins over the ESO
-value, so an operator who enters a client secret in the admin UI silently
+value, so an operator who writes a client secret through the admin API silently
 disables the managed path for that provider. When ESO manages a provider, the
-store must hold no record for it. Add an admin Connectors-tab warning when both
-are present; the cleaner fix is a deployment-level switch that makes the store
-path read-only for client credentials, so the UI shows the ESO-managed client
-id and never accepts a secret.
+store must hold no record for it. Have the admin API warn when both are present;
+the cleaner fix is a deployment-level switch that makes the store path read-only
+for client credentials, so the admin API reports the ESO-managed client id and
+never accepts a secret.
 
 **Rotation is safe on the qm side and conditional on the IdP side.** These
 secrets are not in the single-value set: core presents the secret to the IdP
@@ -991,7 +987,7 @@ folded into a phase or recorded above as a decision.
 
 [^sourceauth]: `src/auth/source-auth.ts:36` — `verifySignature` checks signature, timestamp freshness, and replay only. No caller identity is carried or checked.
 
-[^portalverify]: `verifyPortalIdentity` runs in core at `src/api/server.ts:293` and `src/api/routes/deployments.ts:66`, in web-ui at `plugins/web-ui/server/index.ts:354`, and in admin at `plugins/admin/src/index.ts:86`. Nothing mints it under `PORTAL_IDENTITY_SECRET` any more; core mints a published-app viewer identity at `src/api/routes/deployments.ts:513` under a per-deployment key derived from the source-auth secret, which is a different key for a different audience.
+[^portalverify]: `verifyPortalIdentity` runs in core at `src/api/server.ts:293` and `src/api/routes/deployments.ts:66`. Nothing mints it under `PORTAL_IDENTITY_SECRET` any more; core mints a published-app viewer identity at `src/api/routes/deployments.ts:513` under a per-deployment key derived from the source-auth secret, which is a different key for a different audience.
 
 [^portalguard]: `src/api/server.ts:543` — under `production`, core throws if `PORTAL_IDENTITY_SECRET` or `CAPABILITY_SECRET` is unset, equals `CORE_SIGNING_SECRET`, or equals the other.
 
@@ -1025,7 +1021,7 @@ folded into a phase or recorded above as a decision.
 
 [^slackrefresh]: `src/surfaces/slack-installation.ts` stores `botTokenEnc` and `appTokenEnc` and nothing else; no refresh token, expiry, or `oauth.v2.exchange` call exists under `src/slack/` or `src/surfaces/`.
 
-[^plainhttp]: `deploy/helm/templates/deployment.yaml:50` — `CORE_API_URL` is rendered as `http://…`; `:57` and `:58` do the same for `WEB_UI_UPSTREAM` and `ADMIN_UPSTREAM`.
+[^plainhttp]: `deploy/helm/templates/deployment.yaml` — `CORE_API_URL` is rendered as `http://…`.
 
 [^replay]: `src/auth/source-auth.ts:57` — `createSourceAuth` verifies the signature within a replay window and then claims `eventId` in a dedupe store; a duplicate is rejected as already processed.
 
@@ -1041,9 +1037,7 @@ folded into a phase or recorded above as a decision.
 
 [^codexauth]: `src/harness/codex-harness.ts:272` — when `OPENAI_API_KEY` is set, the harness writes `{ auth_mode: "apikey", OPENAI_API_KEY }` into the child's `auth.json`.
 
-[^impclaim]: `plugins/web-ui/server/index.ts:358` reads `claims.imp` as the human impersonator behind a verified identity.
-
-[^delegation]: `plugins/admin/src/index.ts:83` reads the `x-portal-identity` header and `:86` verifies it under `PORTAL_IDENTITY_SECRET`; `:28` signs every call to core under `CORE_SIGNING_SECRET`, and `:91` re-emits the header, forwarded at `:120`, `:160`, `:258`, and `:439`; `plugins/web-ui/server/index.ts:354` verifies the same header; `src/api/server.ts:293` verifies it again in core.
+[^delegation]: `src/api/server.ts:293` verifies the `x-portal-identity` header under `PORTAL_IDENTITY_SECRET` beside the caller's own source-auth signature, so an intermediary that authenticates a user forwards the header and signs the call.
 
 [^capgate]: `src/api/server.ts:189` verifies a presented capability token under `capabilitySecret ?? secret`, and `:288` enters the identity actor path only when no capability was presented.
 

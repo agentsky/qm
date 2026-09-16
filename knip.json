@@ -33,28 +33,6 @@
         "scripts/slack-user-token.ts"
       ]
     },
-    "plugins/*": {},
-    "plugins/web-ui": {
-      "entry": [
-        "src/shared-session.ts",
-        "src/lazy-katex.ts",
-        "src/lazy-hljs.ts",
-        "src/hljs-lang-stub.ts",
-        "test/**/*.test.ts"
-      ],
-      "ignoreDependencies": [
-        "katex-real",
-        "hljs-real",
-        "hljs-real-javascript",
-        "hljs-real-typescript",
-        "hljs-real-python",
-        "hljs-real-xml",
-        "hljs-real-css",
-        "hljs-real-json",
-        "hljs-real-bash",
-        "hljs-real-sql",
-        "hljs-real-markdown"
-      ]
-    }
+    "plugins/*": {}
   }
 }

@@ -11,10 +11,9 @@ PUBLIC_URL="${K3S_E2E_PUBLIC_URL:-http://qm.e2e.local}"
 POSTGRES_IMAGE="${K3S_E2E_POSTGRES_IMAGE:-postgres:16-alpine}"
 LOG_DIR="${K3S_E2E_LOG_DIR:-$ROOT/.k3s-e2e-logs}"
 CORE_LOCAL_PORT="${K3S_E2E_CORE_PORT:-18080}"
-WEB_LOCAL_PORT="${K3S_E2E_WEB_PORT:-18081}"
 ROLLOUT_TIMEOUT="${K3S_E2E_ROLLOUT_TIMEOUT:-300s}"
 
-SERVICES=(core web-ui egress-proxy)
+SERVICES=(core egress-proxy)
 PORT_FORWARD_PIDS=()
 
 SUDO=""
@@ -216,7 +215,6 @@ deploy_chart() {
     --set image.repository="$IMAGE_REPO" \
     --set image.tag="$IMAGE_TAG" \
     --set image.pullPolicy=Never \
-    --set services.admin.enabled=true \
     --set publicUrl="$PUBLIC_URL" \
     --set secretEnv.DATABASE_URL="postgres://postgres:postgres@postgres.$NAMESPACE.svc.cluster.local:5432/qm" \
     --set secretEnv.CORE_SIGNING_SECRET="$CORE_SIGNING_SECRET" \
@@ -228,6 +226,8 @@ deploy_chart() {
     --set secretEnv.ADMIN_GRANTS="e2e@example.com:org_admin" \
     --set env.HARNESS=mock \
     --set env.NODE_ENV=production \
+    --set env.SESSION_STORE=postgres \
+    --set env.RUN_STORE=postgres \
     --set env.DEPLOY_PROVIDER=docker \
     --wait=false
 }
@@ -290,10 +290,6 @@ verify() {
   start_port_forward "$(service_for core)" "$CORE_LOCAL_PORT" 8080
   expect_status "http://127.0.0.1:$CORE_LOCAL_PORT/healthz" 200
   signed_turn "http://127.0.0.1:$CORE_LOCAL_PORT"
-
-  start_port_forward "$(service_for web-ui)" "$WEB_LOCAL_PORT" 8080
-  expect_status "http://127.0.0.1:$WEB_LOCAL_PORT/healthz" 200
-  expect_status "http://127.0.0.1:$WEB_LOCAL_PORT/admin/" 200
 }
 
 command -v docker >/dev/null 2>&1 || fail "docker is required to build the images the chart runs"

@@ -116,12 +116,12 @@ exact class `turn-resume.ts` exists to prevent (review F3, concurrency pass).
 
 ### Rendering is a projection
 
-Slack transcripts, the admin UI, and the History rollups read the same rows via
+Slack transcripts, the admin API, and the History rollups read the same rows via
 the metadata columns. Today's entry types become render rules. Existing
 seq-keyed joins survive because **during dual-write each tape row records the
 `session_entries.seq` it mirrors**, and post-cutover the tape's own seq continues
 that numbering — `turn_metrics.turn_seq`, delivery provenance, and admin deep-links
-keep working. `forkSession` (web-ui fork/cut) copies
+keep working. `forkSession` (a surface's fork/cut) copies
 a viewer's folded projection into a fresh tape as a `legacy_import` event — the
 one sanctioned projection→tape path.
 
@@ -290,8 +290,7 @@ is the reconstruction of entries ≤ W." Idempotent and re-runnable by construct
      continuation semantics, not a mechanical re-execution;
    - mid-turn-deploy retry: reaped run resumes without re-appending its user
      message or redoing side effects.
-3. **Projection cutover.** Renderers (admin SPA, web-ui bridge — a cross-package
-   wire contract, coordinate the release) move to tape projections. Entries stop
+3. **Projection cutover.** Renderers move to tape projections. Entries stop
    being _read_ but keep being _written_ for one more release (rollback depth = 1
    phase, enforced by keeping the previous phase's write path alive one release
    past its read cutover); then a cleanup PR retires entry writes and

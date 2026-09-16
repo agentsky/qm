@@ -4,25 +4,25 @@ Stop handing every secret to every pod.
 
 This is the implementation plan for the first, self-contained step of the
 secretless work: make the Helm chart render one `Secret` per Deployment and
-attach only that one. It needs no change to core or the plugins, and
-it is a prerequisite for per-workload identity, which lands separately. File
-and line citations are against this tree, after the deployment-path removal
-that deleted the `qm` CLI and the Fly, AWS, and Porter targets. The proposal for
-upstream is `adrs/helm-per-service-secrets.md`, sent on its own stack.
+attach only that one. It needs no change to core, and it is a prerequisite for
+per-workload identity, which lands separately. File and line citations are
+against this tree, after the deployment-path removal that deleted the `qm` CLI,
+the Fly, AWS, and Porter targets, and the web-ui and admin services. The
+proposal for upstream is `adrs/helm-per-service-secrets.md`, sent on its own
+stack.
 
 ## Context
 
 The chart at `deploy/helm/` renders `values.yaml` `secretEnv` into a single
 `Secret` named `<fullname>-env` and attaches it with an unconditional `envFrom`
-to every Deployment it creates, which are core, web-ui, and
-egress-proxy[^helmenvfrom]. Admin runs inside web-ui, so three Deployments carry
-the whole map.
+to every Deployment it creates, which are core and egress-proxy[^helmenvfrom].
+Both Deployments carry the whole map.
 
-The consequence is that the web-ui pod, which serves the browser, holds
+The consequence is that the egress-proxy pod, which reads two keys, holds
 `ANTHROPIC_API_KEY`, `DATABASE_URL`, `CONNECTOR_SECRET_KEY`,
-`SKILL_SIGNING_SECRET`, `CAPABILITY_SECRET`, and the sandbox vendor keys, none
-of which it reads. A web-ui compromise is a database compromise and a
-model-billing compromise in one step. The egress-proxy pod holds the same set.
+`SKILL_SIGNING_SECRET`, and the sandbox vendor keys as well. An egress-proxy
+compromise is a database compromise and a model-billing compromise in one
+step.
 
 Nothing else routes these values any more. The deployment CLI that used to
 carry a per-service secret spec went with the proprietary deployment paths, so
@@ -39,23 +39,21 @@ graph LR
   V["values.yaml secretEnv<br/>one flat map"]
   S[("Secret release-env")]
   Core["core"]
-  Web["web-ui + admin"]
   Egress["egress-proxy"]
 
   V --> S
   S -->|"envFrom"| Core
-  S -->|"envFrom"| Web
   S -->|"envFrom"| Egress
 
   classDef bad fill:#5c1a1a,stroke:#8b2c2c,color:#fff
-  class S,Web,Egress bad
+  class S,Egress bad
 ```
 
 ## Goals
 
 - Each Deployment receives exactly the secrets its processes read, and nothing
-  else. The web-ui and egress-proxy pods stop holding the database, model, and
-  sandbox credentials.
+  else. The egress-proxy pod stops holding the database, model, and sandbox
+  credentials.
 - The routing lives in the chart as data an operator can read and override.
 - A change to one workload's secrets rolls only that workload.
 - Existing releases upgrade with one rolling restart, and with a values change
@@ -63,8 +61,8 @@ graph LR
 
 ## Non-goals
 
-- Changing what any process reads. Core, the plugins, and the egress authz
-  keep reading `process.env`; only the environment they are given shrinks.
+- Changing what any process reads. Core and the egress authz keep reading
+  `process.env`; only the environment they are given shrinks.
 - Per-service ServiceAccounts, projected tokens, or any identity change. Those
   are the next step and depend on this one.
 - External Secrets Operator or any other carrier. This design decides which
@@ -78,17 +76,15 @@ graph LR
 ## Who reads what
 
 The routing is derived from the code, not from the current `secretEnv`. Core
-is `src/config.ts` and the modules it wires; web-ui and admin are their plugin
-entrypoints plus the chassis, which reads the two shared keys on behalf of
-every plugin[^chassisreads]; egress-proxy is `src/egress-authz-main.ts`.
+is `src/config.ts` and the modules it wires; egress-proxy is
+`src/egress-authz-main.ts`.
 
-| Deployment       | Hosts         | Secrets read                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Non-secrets currently in `secretEnv`                                                                                                     |
-| ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **core**         | core, slack   | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MODEL_GATEWAY_API_KEY`, `DATABASE_URL`, `DATABASE_POOL_URL`, the sandbox vendor keys, `DEPLOY_APPS_SESSION_SECRET`, `DEPLOY_GATE_SECRET`, the seven `*_OAUTH_CLIENT_SECRET` values, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_USER_TOKEN`, `SLACK_COPILOT_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SECURITY_SCREEN_PROXY_TOKEN`, `RESEND_API_KEY`, and the harness credentials `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_AUTH_CREDENTIAL`, `CODEX_ACCESS_TOKEN`, and `CODEX_AUTH_CREDENTIAL`[^harnesscreds] | `PUBLIC_API_URL`, `ADMIN_GRANTS`, `SANDBOX_BACKEND`, `DEPLOY_PROVIDER`, `DEPLOY_APPS_DOMAIN`, `AUTH_EMAIL_FROM`, the two CA certificates |
-| **web-ui**       | web-ui, admin | `CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`[^chassisreads]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `DEPLOY_APPS_DOMAIN`, for the frame-ancestors policy[^webuidomain]                                                                       |
-| **egress-proxy** | egress authz  | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`; `DATABASE_URL` only when no core relay is configured, and the chart always wires one[^egressenv]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | none                                                                                                                                     |
+| Deployment       | Hosts        | Secrets read                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Non-secrets currently in `secretEnv`                                                                                                     |
+| ---------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **core**         | core, slack  | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `MODEL_GATEWAY_API_KEY`, `DATABASE_URL`, `DATABASE_POOL_URL`, the sandbox vendor keys, `DEPLOY_APPS_SESSION_SECRET`, `DEPLOY_GATE_SECRET`, the seven `*_OAUTH_CLIENT_SECRET` values, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_USER_TOKEN`, `SLACK_COPILOT_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SECURITY_SCREEN_PROXY_TOKEN`, `RESEND_API_KEY`, and the harness credentials `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_AUTH_CREDENTIAL`, `CODEX_ACCESS_TOKEN`, and `CODEX_AUTH_CREDENTIAL`[^harnesscreds] | `PUBLIC_API_URL`, `ADMIN_GRANTS`, `SANDBOX_BACKEND`, `DEPLOY_PROVIDER`, `DEPLOY_APPS_DOMAIN`, `AUTH_EMAIL_FROM`, the two CA certificates |
+| **egress-proxy** | egress authz | `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`; `DATABASE_URL` only when no core relay is configured, and the chart always wires one[^egressenv]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | none                                                                                                                                     |
 
-Four things deserve a note.
+Three things deserve a note.
 
 - The core list is longer than the chart's `secretEnv` declares. The current
   template forwards any key an operator adds to the map[^secretrange], so a
@@ -102,20 +98,14 @@ Four things deserve a note.
   `ANTHROPIC_API_KEY`, and a ChatGPT token or keychain credential instead of
   `OPENAI_API_KEY`[^harnesscreds]. The first draft of this list missed those,
   which is why the render check does not trust the list alone.
-- The web-ui pod today holds every value in the map and needs three: the
-  two shared keys the chassis reads, and the apps domain for its
-  `frame-ancestors` policy. The first draft of this table said two; the domain
-  read is in the server, not the plugin, and a missing value degrades silently
-  to no framing rather than failing.
 - The egress-proxy authz reads `DATABASE_URL`, but only as the audit sink it
   falls back to when it has no core relay, and the chart wires `CORE_API_URL`
   on every non-core Deployment[^egressenv]. So the routed set is the two keys,
   and the database credential reaches one pod, not two.
-- `PORTAL_IDENTITY_SECRET` is routed to three readers and written by none.
-  Core, web-ui, and admin all verify the signed identity header under it and
-  the workload that used to mint it is gone[^identityheader]. The routing keeps
-  the key where the verifiers are; supplying a producer is the secretless
-  plan's Phase B1, not this change.
+- `PORTAL_IDENTITY_SECRET` is routed to one reader and written by none. Core
+  verifies the signed identity header under it and the workload that used to
+  mint it is gone[^identityheader]. The routing keeps the key where the verifier
+  is; supplying a producer is the secretless plan's Phase B1, not this change.
 
 ## Proposed design
 
@@ -179,13 +169,6 @@ services:
       - DEPLOY_PROVIDER
       - DEPLOY_APPS_DOMAIN
       - AUTH_EMAIL_FROM
-  admin:
-    secrets: []
-  web-ui:
-    secrets:
-      - CORE_SIGNING_SECRET
-      - PORTAL_IDENTITY_SECRET
-      - DEPLOY_APPS_DOMAIN
   egress-proxy:
     secrets:
       - CORE_SIGNING_SECRET
@@ -193,19 +176,15 @@ services:
 ```
 
 A list rather than a map, because the values already live in `secretEnv` and
-a second map would invite typing them twice. A list per declared service
-rather than per Deployment, because admin is a declared service with its own
-reads, and the chart already merges an embedded component's `env` into its
-host[^helmembed]; the same merge applies to `secrets`. Helm replaces
-a list wholesale on override, which is the right semantics for a routing
-table: an operator who overrides `services.web-ui.secrets` states the whole
-set.
+a second map would invite typing them twice. Helm replaces a list wholesale on
+override, which is the right semantics for a routing table: an operator who
+overrides `services.egress-proxy.secrets` states the whole set.
 
 A name in `secretEnv` with a non-empty value that no enabled workload lists is
 a render failure naming the key. That catches the habit this change is
 removing: adding a key to `secretEnv` and expecting it to appear everywhere.
-It also means an operator who has been carrying a non-secret setting or a
-plugin's secret through `secretEnv` sees each such key named at `helm upgrade`
+It also means an operator who has been carrying a non-secret setting through
+`secretEnv` sees each such key named at `helm upgrade`
 and moves it, one line each, to `env`, to `services.<name>.env`, or to the
 service's `secrets` list. A listed name with an empty or absent value is
 skipped, as today, so the defaults can list optional keys without forcing
@@ -220,8 +199,7 @@ escape hatch, and the values file says so.
 
 A named template, `qm.workloadSecret`, takes `(dict "root" $ "service"
 $name)` and renders one `Secret` named `<fullname>-<service>-env` containing
-the union of the host's list and its embedded component's list, filtered to
-non-empty values. `templates/secret.yaml` ranges over the rendered
+that service's list, filtered to non-empty values. `templates/secret.yaml` ranges over the rendered
 Deployments and includes it once each. The `OIDC_*` aliases the template used
 to render go with the sign-in front door they served, so nothing in the chart
 aliases one `secretEnv` key onto another any more and the renderer checks each
@@ -229,10 +207,7 @@ non-empty input against the union of the enabled routing lists and nothing
 else.
 
 `templates/deployment.yaml` attaches `<fullname>-<service>-env` by
-`secretRef`, then the workload's own `envFrom`, then its enabled embedded
-component's `envFrom` (admin into web-ui, the same merge the chart applies to
-`env` and this design applies to `secrets`), then the shared top-level list. A
-disabled component contributes nothing.
+`secretRef`, then the workload's own `envFrom`, then the shared top-level list.
 Kubernetes resolves a key that appears in more than one `envFrom` entry to
 the last one, so the shared list wins over the chart's Secret, which is
 today's order as well[^envfromvalue]. Nothing else from `secretEnv` reaches
@@ -244,41 +219,36 @@ render[^helmchecksum]. Including the file would hash every workload's Secret
 and roll every pod on any change, which is what happens today; including the
 named template for this service hashes this service's Secret
 only. Rotating `ANTHROPIC_API_KEY`, which only core's Secret carries, rolls
-core and nothing else; rotating `CORE_SIGNING_SECRET` rolls all three, because
-all three read it.
+core and nothing else; rotating `CORE_SIGNING_SECRET` rolls both, because both
+read it.
 
 ```mermaid
 graph LR
   V["values.yaml secretEnv"]
   R["services.*.secrets<br/>routing lists"]
   SC[("core-env")]
-  SW[("web-ui-env")]
   SE[("egress-proxy-env")]
   Core["core"]
-  Web["web-ui + admin"]
   Egress["egress-proxy"]
 
   V --> SC
-  V --> SW
   V --> SE
   R -. selects .-> SC
-  R -. selects .-> SW
   R -. selects .-> SE
   SC -->|"envFrom"| Core
-  SW -->|"envFrom"| Web
   SE -->|"envFrom"| Egress
 
   classDef good fill:#1b4332,stroke:#2d6a4f,color:#fff
-  class SC,SW,SE good
+  class SC,SE good
 ```
 
-### What the rendered web-ui Secret contains afterwards
+### What the rendered egress-proxy Secret contains afterwards
 
-With the defaults, the web-ui pod's Secret holds `CORE_SIGNING_SECRET`,
-`PORTAL_IDENTITY_SECRET`, and `DEPLOY_APPS_DOMAIN`. It no longer holds
-`ANTHROPIC_API_KEY`, `DATABASE_URL`, `CONNECTOR_SECRET_KEY`,
-`SKILL_SIGNING_SECRET`, `CAPABILITY_SECRET`, or any sandbox vendor key. That is
-the acceptance test, and it is checked in CI.
+With the defaults, the egress-proxy pod's Secret holds `CORE_SIGNING_SECRET`
+and `CAPABILITY_SECRET`. It no longer holds `ANTHROPIC_API_KEY`,
+`DATABASE_URL`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`,
+`PORTAL_IDENTITY_SECRET`, or any sandbox vendor key. That is the acceptance
+test, and it is checked in CI.
 
 ### Verification
 
@@ -293,7 +263,7 @@ helm template qm deploy/helm -f deploy/helm/ci/values.yaml > /tmp/render.yaml
 
 with assertions over the render: exactly one `Secret` per enabled
 Deployment; each Secret's keys equal to the table above for a values file that
-sets every routed key; the web-ui Secret free of the six keys above; every
+sets every routed key; the egress-proxy Secret free of the keys above; every
 Deployment's `envFrom` carrying exactly one chart-rendered `secretRef` and it
 its own; and a values file with an unrouted key failing with the key's name in
 the message. Fixtures cover the alternative harness credential paths
@@ -302,7 +272,7 @@ and assert core's Secret carries them.
 
 Comparing the render to a hand-maintained table cannot catch a name missing
 from both, so a second check derives the expected set from the code. It scans `src/`
-and the plugins for member reads of the form `env.NAME` and
+for member reads of the form `env.NAME` and
 `process.env.NAME`, because core reads its environment through a function
 parameter named `env` rather than `process.env`[^envparam], and for
 string-valued env-name fields such as `clientSecretEnv`. Computed reads
@@ -315,16 +285,15 @@ are minted at runtime and never deployed (`AGENT_CREDENTIAL_TOKEN`,
 `OPENCODE_BRIDGE_SECRET`). A new credential read fails that check until
 someone routes it.
 
-The embedded-component behavior has its own fixtures: `services.admin.envFrom`
-must reach the web-ui Deployment and no other, and disabling the component must
-remove its references; an unrelated unused key in any values file must fail.
+Disabling a service must remove its Secret and its references, and an unrelated
+unused key in any values file must fail.
 The assertions live in a shell test next to the chart and run in the existing
 `Lint` job, which already checks the tree's formatting and is the job that
 touches chart files.
 
 ## Migration
 
-Chart `version` moves from `0.2.7` to `0.3.0`[^chartver]. The upgrade path
+Chart `version` moves to the next minor[^chartver]. The upgrade path
 for an existing release:
 
 1. `helm upgrade`. If every non-empty key in `secretEnv` is one the defaults
@@ -332,8 +301,8 @@ for an existing release:
    change. Every Deployment's checksum annotation changes, because its Secret
    is new, so every pod rolls once, and each comes back with a strict subset
    of what it had.
-2. If the operator had put anything else into `secretEnv`, a non-secret
-   setting or a plugin's secret, the render fails and names each such key.
+2. If the operator had put anything else into `secretEnv`, such as a
+   non-secret setting, the render fails and names each such key.
    They move each one to `env`, to `services.<name>.env`, or to the service's
    `secrets` list, and upgrade again. That is a values change, it is
    one line per key, and it happens at render rather than at runtime.
@@ -341,13 +310,10 @@ for an existing release:
    since it is no longer in the render.
 
 The probes will not catch a lost key, so the render check is the safety net
-and not the roll. Only core has an HTTP health path; web-ui and
-egress-proxy use `tcpSocket` probes[^probes], and every process treats a
+and not the roll. Only core has an HTTP health path; egress-proxy uses a
+`tcpSocket` probe[^probes], and every process treats a
 missing key as optional at runtime: the egress authz falls back to an
-in-memory audit sink[^egressenv], the chassis falls `PORTAL_IDENTITY_SECRET`
-back to `CORE_SIGNING_SECRET` with a warning[^chassisreads], and web-ui
-without the apps domain serves a `frame-ancestors` policy that frames
-nothing[^webuidomain]. A missing key is a quiet regression, which is why the
+in-memory audit sink[^egressenv]. A missing key is a quiet regression, which is why the
 render check compares each Secret's keys to the table rather than checking
 only that the pods come up.
 
@@ -357,9 +323,9 @@ A downgrade is `helm rollback`, which restores the single Secret and the
 ## Alternatives considered
 
 **A `secretEnv` map per service.** `services.<name>.secretEnv` with the values
-inside. Simplest template, but `CORE_SIGNING_SECRET` would be typed three times
-and `PORTAL_IDENTITY_SECRET` twice, and a rotation that misses one copy is a
-signature-mismatch outage. Rejected in favor of one value store plus routing.
+inside. Simplest template, but `CORE_SIGNING_SECRET` would be typed twice, and
+a rotation that misses one copy is a signature-mismatch outage. Rejected in
+favor of one value store plus routing.
 
 **Render the routing from core's own spec list.** The right end state, and the
 reason this document calls the lists "for now". It needs
@@ -385,7 +351,7 @@ README.
 | Risk                                                                       | Mitigation                                                                                                                                                                                                   |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | The table misses a read and a pod loses a key it needs                     | The render check compares each Secret's keys to the table; the probes do not catch it, so the check gates the merge; `helm rollback` restores the previous state in one command                              |
-| A release carries a key through `secretEnv` that the defaults do not route | The render fails naming the key before anything rolls; secret names the code reads are all routed by default, so this bites non-secret settings and plugin secrets, each a one-line move                     |
+| A release carries a key through `secretEnv` that the defaults do not route | The render fails naming the key before anything rolls; secret names the code reads are all routed by default, so this bites non-secret settings, each a one-line move                                        |
 | The chart's routing drifts from what the code reads                        | The lists are data in one file, next to the table in this document, and the code scan fails on a credential read that no list routes                                                                         |
 | The one-time roll interrupts in-flight agent turns                         | Core has no PodDisruptionBudget or other disruption protection on Kubernetes; schedule the upgrade like any other core roll                                                                                  |
 | The shared `envFrom` is used to reintroduce a map every pod receives       | It keeps that meaning on purpose and the values file says so; `services.<name>.envFrom` is the scoped form; the render check asserts each Deployment carries exactly one chart-rendered `secretRef`, its own |
@@ -397,15 +363,11 @@ it.
 
 ## References
 
-[^helmenvfrom]: `deploy/helm/templates/secret.yaml` renders every `secretEnv` value into one `Secret`; `deploy/helm/templates/deployment.yaml:122` attaches it by `secretRef` inside an `envFrom` that every rendered Deployment receives. Admin is embedded in web-ui, so the three Deployments are core, web-ui, and egress-proxy.
+[^helmenvfrom]: `deploy/helm/templates/secret.yaml` renders every `secretEnv` value into one `Secret`; `deploy/helm/templates/deployment.yaml` attaches it by `secretRef` inside an `envFrom` that every rendered Deployment receives. The two Deployments are core and egress-proxy.
 
 [^egressenv]: `src/egress-authz-main.ts:233` (`CAPABILITY_SECRET`), `:234` (`DATABASE_URL`), `:236` (`CORE_SIGNING_SECRET`); `:243` uses the core relay when `CORE_API_URL` and `CORE_SIGNING_SECRET` are set, the Postgres sink when only `DATABASE_URL` is, and an in-memory sink otherwise. `deploy/helm/templates/deployment.yaml:50` wires `CORE_API_URL` on every non-core Deployment.
 
-[^identityheader]: `verifyPortalIdentity` runs in core at `src/api/server.ts:293`, in web-ui at `plugins/web-ui/server/index.ts:354`, and in admin at `plugins/admin/src/index.ts:86`. The only remaining minter is core's published-app viewer path (`src/api/routes/deployments.ts:513`), which signs under a per-deployment derived key rather than `PORTAL_IDENTITY_SECRET`.
-
-[^chassisreads]: `plugins/chassis/src/env.ts:5` reads `CORE_SIGNING_SECRET` and `:6` reads `PORTAL_IDENTITY_SECRET`, falling back to `CORE_SIGNING_SECRET` with a warning at `:7`; every plugin imports both from there, including web-ui at `plugins/web-ui/server/index.ts:33` and admin at `plugins/admin/src/index.ts:14`.
-
-[^webuidomain]: `plugins/web-ui/server/index.ts:211` — `APPS_FRAME_DOMAIN` from `DEPLOY_APPS_DOMAIN`, used to build the `frame-ancestors` directive on the following lines.
+[^identityheader]: `verifyPortalIdentity` runs in core at `src/api/server.ts:293`. The only remaining minter is core's published-app viewer path (`src/api/routes/deployments.ts:513`), which signs under a per-deployment derived key rather than `PORTAL_IDENTITY_SECRET`.
 
 [^secretrange]: `deploy/helm/templates/secret.yaml:10` — `range $k, $v := .Values.secretEnv` renders every non-empty key, declared in `values.yaml` or not.
 
@@ -417,14 +379,12 @@ it.
 
 [^computedreads]: `src/harness/opencode-plugin.ts:48` reads `OPENCODE_BRIDGE_URL` and `OPENCODE_BRIDGE_SECRET` by name, the latter minted per run at `src/harness/opencode-harness.ts:753`.
 
-[^probes]: `deploy/helm/templates/deployment.yaml:129` — an HTTP probe only when the service sets `healthPath`, otherwise `tcpSocket` at `:140`; `deploy/helm/values.yaml:72` sets `healthPath` on core alone.
+[^probes]: `deploy/helm/templates/deployment.yaml` — an HTTP probe only when the service sets `healthPath`, otherwise `tcpSocket`; `deploy/helm/values.yaml` sets `healthPath` on core alone.
 
-[^helmembed]: `deploy/helm/templates/deployment.yaml:111` — the web-ui Deployment merges `services.admin.env`, failing on a conflicting value.
+[^envfromvalue]: `deploy/helm/values.yaml:21` — `envFrom: []`, appended after the chart's own `secretRef` in `deploy/helm/templates/deployment.yaml`.
 
-[^envfromvalue]: `deploy/helm/values.yaml:21` — `envFrom: []`, appended after the chart's own `secretRef` at `deploy/helm/templates/deployment.yaml:125`.
-
-[^helmchecksum]: `deploy/helm/templates/deployment.yaml:26` — the annotation hashes the whole `secret.yaml` render, so any value change rolls every Deployment.
+[^helmchecksum]: `deploy/helm/templates/deployment.yaml` — the annotation hashes the whole `secret.yaml` render, so any value change rolls every Deployment.
 
 [^helmci]: `.github/workflows/cicd.yml` has no job that runs `helm`; `scripts/deploy-helm.sh:32` packages and `:38` installs, with no render assertion.
 
-[^chartver]: `deploy/helm/Chart.yaml:5` — `version: 0.2.7`.
+[^chartver]: `deploy/helm/Chart.yaml` — the chart's `version`.

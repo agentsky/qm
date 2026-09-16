@@ -267,8 +267,6 @@ function writeLegacyMeta(booting: boolean): void {
     worktree,
     branch,
     port: String(ports.core),
-    web_port: String(ports.web),
-    admin_port: String(ports.admin),
     handle,
     supervisor_pid: String(process.pid),
     session_store: durability.sessionStore,
@@ -324,7 +322,7 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
   phase("env", "ok", harnessDetail);
 
   phase("deps", "start");
-  await ensureDeps(worktree, { watch: spec.watch, webUiBasePath: spec.callerEnv.DEV_INSTANCE_WEB_UI_BASE || "/" }, log);
+  await ensureDeps(worktree, log);
   phase("deps", "ok");
 
   phase("sandbox", "start");
@@ -393,13 +391,11 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
     ports,
     baseEnv: assembled.env,
     watch: spec.watch,
-    webUiBasePath: spec.callerEnv.DEV_INSTANCE_WEB_UI_BASE || "/",
     ...(tokens ? { slack: { botToken: tokens.botToken, appToken: tokens.appToken } } : {}),
     sessionStore,
     runStore,
     databaseUrl,
     adminGrantsSeed,
-    coreSigningSecret: assembled.env.CORE_SIGNING_SECRET || "",
     sandboxEnv: sandbox.env,
   };
 }

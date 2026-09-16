@@ -50,7 +50,7 @@ secretEnv:
 
 ingress:
   enabled: false
-  service: web-ui
+  service: core
   className: nginx
   hosts: []
   tls: true
@@ -74,38 +74,6 @@ services:
       limits:
         memory: 2Gi
     env: {}
-
-  web-ui:
-    enabled: true
-    image: web-ui
-    type: web
-    port: 8080
-    replicas: 1
-    command: ["node", "server/index.ts"]
-    healthPath: /healthz
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        memory: 512Mi
-    env: {}
-
-  admin:
-    enabled: true
-    image: admin
-    type: web
-    port: 8080
-    replicas: 1
-    command: ["node", "src/index.ts"]
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        memory: 512Mi
-    env:
-      ADMIN_BASE_PATH: /admin
 
   egress-proxy:
     enabled: true

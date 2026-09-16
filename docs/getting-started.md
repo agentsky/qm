@@ -1,8 +1,7 @@
 # Deploy QM for an organization
 
-QM runs on Kubernetes. The chart in [`deploy/helm/`](../deploy/helm) deploys core and the
-surface services (the web UI, which also serves the admin surface under `/admin`, and the
-egress proxy) from one values file.
+QM runs on Kubernetes. The chart in [`deploy/helm/`](../deploy/helm) deploys core, which
+hosts the Slack integration and the HTTP API, and the egress proxy, from one values file.
 
 ## Prerequisites
 
@@ -12,8 +11,10 @@ egress proxy) from one values file.
 - Service images. Either use the signed images the release workflow publishes to
   `ghcr.io/yc-software/qm` (`image.repository` and `image.tag`), or build and push your
   own from this checkout with [`scripts/deploy-helm.sh`](../scripts/deploy-helm.sh).
-- Optional: an ingress controller and cert-manager, if you want the chart to publish the
-  web UI on a hostname with TLS. Without them, reach the web UI by port-forward.
+- Optional: an ingress controller and cert-manager, if you want core published on a
+  hostname with TLS. An ingress is what lets Slack reach core over HTTP, what webhook
+  senders post to, and what serves published apps. Slack's Socket Mode does not need one;
+  without an ingress, reach core by port-forward.
 - A sandbox backend. `SANDBOX_BACKEND=local` runs agent computers as Docker containers
   next to core; the hosted backends (e2b, modal, smolmachines, agent37) need their own
   API key. See [`deploy/sandbox-base/README.md`](../deploy/sandbox-base/README.md).
@@ -62,18 +63,18 @@ service is enabled at all. Secrets are scoped per service — see
 
 ## After the first install
 
-The chart exposes `web-ui` on the ingress and ships no identity provider. Both surfaces
-establish the viewer from a signed `x-portal-identity` header they verify with
-`PORTAL_IDENTITY_SECRET`, so signing anyone in requires putting something in front of
-`web-ui` that authenticates the user and mints that header. Until you do, the surfaces
-cannot sign anyone in.
+The chart exposes `core` on the ingress and ships no identity provider. Core establishes
+a browser-borne caller from a signed `x-portal-identity` header it verifies with
+`PORTAL_IDENTITY_SECRET`, so signing anyone in requires putting something in front of core
+that authenticates the user and mints that header. Until you do, core cannot sign anyone
+in.
 
 `AUTH_ALLOWED_EMAILS` still says who may be invited, and `AUTH_EMAIL_FROM` with
 `RESEND_API_KEY` lets admins email those invitations; neither authenticates anyone.
 
-Connector OAuth clients and the optional Slack bot token pair are entered in the admin
-surface once it is reachable. They are encrypted in durable storage and never belong in
-a values file.
+Connector OAuth clients and the optional Slack bot token pair are set through core's
+authenticated admin API. They are encrypted in durable storage and never belong in a
+values file.
 
 The QM repository has no production deployment workflow: each deployment runs in the
 operator's own cluster. Keep your values file and any org-specific tools, skills, and

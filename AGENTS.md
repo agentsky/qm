@@ -57,15 +57,15 @@ Two habits that keep task-focused changes from scarring the rest of the repo:
   change reaches.
 - **Verify non-trivial behavior changes in a live dev instance before opening a PR.**
   When a change is substantial enough that unit tests alone won't prove it works
-  end-to-end — new or changed agent behavior, or anything touching the Slack/web
-  surfaces, orchestrator, directory, or cron flows — boot this worktree with the
+  end-to-end — new or changed agent behavior, or anything touching the Slack
+  surface, orchestrator, directory, or cron flows — boot this worktree with the
   `/dev-instance` skill and exercise it through a browser against the configured Slack
   development workspace before opening a PR. Do this Slack QA in **Firefox**, never the
   Slack Mac app, and don't ask permission first — do it on your own; don't wait to be
   asked. Skip it for trivial refactors, docs, config, or pure-logic changes already
   covered by tests.
 - **Demo every front-end change in the PR.** Anything an operator or user sees
-  rendered — admin/web/portal UI, Slack surfaces, emails — ships with a way for a
+  rendered — Slack surfaces, emails — ships with a way for a
   reviewer to see the result without booting it. Prefer a link to a live demo app
   (e.g. the built UI served against a small mock API, published internally) so the
   reviewer can click around the real thing; note in the PR what's mocked. Fall back

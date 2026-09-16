@@ -1,6 +1,6 @@
 # Session sharing
 
-The Share button beside a session title creates a read-only copy of its visible messages, replies, and attachments. Every creation produces a fresh link. Existing links keep their original content; there are no update or revoke controls.
+`POST /v1/sessions/:id/share` creates a read-only copy of a session's visible messages, replies, and attachments. Every creation produces a fresh link. Existing links keep their original content; there are no update or revoke controls.
 
 Choose **Anyone in your organization** to require a signed-in internal account, or **Anyone with the link** to allow viewing and downloading without signing in. The latter is a bearer link: recipients can forward it. External links use the deployment's public web origin; localhost links work only on the machine running the dev instance.
 
@@ -10,4 +10,4 @@ Each attachment is authorized for the creator and copied into separate durable s
 
 Snapshots live in the durable `session_shares` map, keyed by an unguessable random token. Copied bytes live in the configured durable byte backend under `session-shares`. Both internal and external reads verify that the creator is still internal and can access the original entries. If that access disappears, the share becomes unavailable.
 
-The public web origin permits only external share pages, their file downloads, and built static assets without sign-in. It forwards no browser cookies or identity headers on those routes. The web server calls the dedicated signed core projection endpoint; it never loads the private session API. Shared pages use an isolated frontend entry with no session fetches, no-store responses, no-referrer, noindex, and a restrictive content security policy. External pages use the production build even during development.
+Core reads a snapshot back through dedicated signed projection routes, `GET /v1/{shared-sessions,public-shares}/:token` and `/files/:fileId`, which are separate from the private session API and return only the projected snapshot. A surface that renders share pages calls those routes and nothing else; it should forward no browser cookies or identity headers on them, and serve the pages with no-store responses, no-referrer, noindex, and a restrictive content security policy.

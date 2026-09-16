@@ -8,13 +8,7 @@ const readme = read("README.md");
 const index = read("src/index.ts");
 const server = read("src/api/server.ts");
 const agentTools = read("src/harness/agent-tools.ts");
-const adminUi = read("plugins/admin/public/index.html");
 const rootPackage = JSON.parse(read("package.json")) as { dependencies: Record<string, string> };
-const webPackage = JSON.parse(read("plugins/web-ui/package.json")) as {
-  scripts: Record<string, string>;
-  dependencies: Record<string, string>;
-  devDependencies: Record<string, string>;
-};
 
 test(".env.example declares no model provider key, real or placeholder", () => {
   for (const line of read(".env.example").split("\n")) {
@@ -42,10 +36,7 @@ test("README describes the shipped Slack topology", () => {
 test("README names the frameworks the shipped surfaces use", () => {
   assert.ok(rootPackage.dependencies.fastify);
   assert.ok(rootPackage.dependencies["@slack/bolt"]);
-  assert.ok(webPackage.devDependencies.vite);
-  assert.ok(webPackage.dependencies.lit);
-  assert.match(webPackage.scripts.build ?? "", /vite build/);
-  for (const framework of ["Fastify", "Bolt", "Vite", "Lit"]) {
+  for (const framework of ["Fastify", "Bolt"]) {
     assert.ok(readme.includes(framework), `README names ${framework}`);
   }
   assert.doesNotMatch(readme, /No build step, no framework/);
@@ -59,5 +50,4 @@ test("Strict posture describes its approval gate, exemptions, and direct-mutatio
   );
   assert.match(server, /decision === "decline"/);
   assert.doesNotMatch(server, /Strict posture permits observation only/);
-  assert.doesNotMatch(adminUi, /every tool call/i);
 });
