@@ -10,7 +10,6 @@ import {
   localNetworkName,
   localVolumeName,
 } from "../src/sandbox/local-sandbox.ts";
-import { createSpritesSandbox } from "../src/sandbox/sprites-sandbox.ts";
 import { createSmolmachinesSandbox } from "../src/sandbox/smolmachines-sandbox.ts";
 import { createAgent37Sandbox } from "../src/sandbox/agent37-sandbox.ts";
 import { sandboxScopeName } from "../src/sandbox/exec-sandbox-base.ts";
@@ -38,24 +37,6 @@ test("Local scope deletion removes deterministic resources without provisioning,
   fail = true;
   await assert.rejects(sandbox.destroyScope!("missing"), /daemon unavailable/);
   assert.equal(calls.length, 4);
-});
-
-test("Sprites scope deletion sends only DELETE, retries provider errors, and accepts missing bodies", async () => {
-  const calls: string[] = [];
-  let status = 503;
-  const sandbox = createSpritesSandbox(workspace(), {
-    token: "test",
-    fetchImpl: async (input, init) => {
-      calls.push(`${init?.method} ${new URL(String(input)).pathname}`);
-      return new Response(null, { status });
-    },
-  });
-  await assert.rejects(sandbox.destroyScope!("scope"), /503/);
-  status = 204;
-  await sandbox.destroyScope!("scope");
-  status = 404;
-  await sandbox.destroyScope!("scope");
-  assert.deepEqual(calls, Array(3).fill(`DELETE /v1/sprites/${sandboxScopeName("qm", "scope")}`));
 });
 
 for (const [name, create, resource] of [

@@ -56,9 +56,10 @@ read means unknown, not absent. Never inspect deployment secrets to infer status
   instructions or deployment operator; do not create a duplicate app.
 - Otherwise offer the setup below. It is optional; continue onboarding if deferred.
 
-When `installAvailable: true`, use the authenticated admin dashboard's **Add to Slack**
-action. Use the known dashboard URL, not an invented hostname or a launch ticket minted
-in the agent's shell. Walk the admin through the offered flow, one step at a time:
+When `installAvailable: true`, the admin completes **Add to Slack** on the deployment's
+own authenticated admin surface. Use the URL the deployment gives you, not an invented
+hostname or a launch ticket minted in the agent's shell. Walk the admin through the
+offered flow, one step at a time:
 
 1. If a configuration-token form appears, open [Slack app settings](https://api.slack.com/apps).
    Under **App Configuration Tokens**, choose **Generate Token**, select the intended
@@ -73,8 +74,8 @@ in the agent's shell. Walk the admin through the offered flow, one step at a tim
    require a real reply to a DM or mention before claiming the bot works. Follow the
    page's recovery instructions after failure rather than blindly repeating creation.
 
-Without managed installation, use the returned `createUrl` and the dashboard's workspace
-app guide. Have them enter credentials only in that secure form. Do not guess scopes,
+Without managed installation, use the returned `createUrl` and its workspace app guide.
+Have them enter credentials only in that secure form. Do not guess scopes,
 callback URLs, or credential requirements; reuse existing setup and recheck status.
 
 ## Finding the scope
@@ -130,8 +131,8 @@ GET /v1/admin/users            → roster + admin status (org-wide)
 
 ## External users
 
-Outside collaborators, admitted by email with a role and an expiry; they sign in at the
-portal with that address until it lapses. Listed alongside the roster:
+Outside collaborators, admitted by email with a role and an expiry; they sign in with that
+address until it lapses. Listed alongside the roster:
 
 ```bash
 GET /v1/admin/users                          → externalUsers: [{email, role, expiresAt, invitedBy, status: active|expired}]
@@ -148,8 +149,8 @@ grant change — don't offer it.
 
 ## Admin grants (promote / revoke)
 
-Not available through you: who governs the org changes only in the admin dashboard,
-where the admin acts directly. If asked, point them there — don't try the API
+Not available through you: who governs the org changes only where the admin acts
+directly, never through an agent. If asked, say so — don't try the API
 (`POST/DELETE /v1/admin/grants` refuses agent tokens).
 
 ## Failure modes
@@ -162,13 +163,14 @@ where the admin acts directly. If asked, point them there — don't try the API
   tell the admin to ask again in a DM with you (or, for reads they want recurring
   on a schedule, to put an unattended read grant on a personal-scope cron — from
   their DM, never from here).
-- `403 … grant changes (promote/revoke) are portal-only` — point them at the dashboard.
+- `403 … grant changes (promote/revoke) are portal-only` — say the admin has to do it
+  directly; you cannot.
 - `403 granting or removing org admin for an external user is portal-only …` — same
-  answer: the dashboard.
+  answer.
 - `409 that address already belongs to a member of the org …` — org email domain, Slack
   directory, sign-in allow-list, or someone who has already used the agent. They are not
-  external; point the admin at Users / Admins for that person instead.
-- `409 that address holds an org admin grant of its own …` — the admin manages that grant
-  under Admins in the dashboard first.
+  external; tell the admin to manage that person as a member instead.
+- `409 that address holds an org admin grant of its own …` — the admin removes that
+  grant directly first.
 - `403 capability token not valid for this route` — this core predates agent admin
-  access; the user must use the admin dashboard.
+  access; the admin has to act directly.

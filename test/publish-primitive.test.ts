@@ -121,7 +121,7 @@ test("publish falls back to per-file reads when the routed backend refuses expor
   ];
   const sandbox = fileSandbox(files);
   sandbox.exportFiles = async () => {
-    throw new CapabilityUnsupportedError("sprites", "exportFiles");
+    throw new CapabilityUnsupportedError("smolmachines", "exportFiles");
   };
   const warnings: unknown[][] = [];
   const warn = console.warn;
@@ -138,7 +138,7 @@ test("publish falls back to per-file reads when the routed backend refuses expor
   })();
   assert.equal(r.url, "/d/sprite-app/");
   assert.deepEqual(warnings, [
-    ["[publish] this computer's substrate (sprites) does not support exportFiles; falling back to per-file reads"],
+    ["[publish] this computer's substrate (smolmachines) does not support exportFiles; falling back to per-file reads"],
   ]);
   const d = (await s.deployStore.getByName("sprite-app"))!;
   assert.deepEqual(
@@ -646,7 +646,7 @@ test("publish drops git metadata on the per-file fallback path too", async () =>
   ];
   const sandbox = fileSandbox(files);
   sandbox.exportFiles = async () => {
-    throw new CapabilityUnsupportedError("sprites", "exportFiles");
+    throw new CapabilityUnsupportedError("smolmachines", "exportFiles");
   };
   const tc = ctx(s.deploy, { files, sandbox });
   await tc.publish({ entrypoint: "node server.js", name: "gitty-fallback" });

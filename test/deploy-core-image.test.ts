@@ -20,11 +20,7 @@ test("core deploy image includes git", () => {
     "the production dependency threshold is a build gate",
   );
   assert.doesNotMatch(dockerfile, /patch-pi-shrinkwrap/, "the dependency layer should be lockfile-only");
-  assert.match(
-    dockerfile,
-    /COPY cli\/templates\/slack-manifest\.json \.\/cli\/templates\/slack-manifest\.json/,
-    "admin Slack setup needs the canonical manifest at runtime",
-  );
+  assert.match(dockerfile, /^ENV NODE_ENV=production$/m, "the core image runs in production mode");
   for (const line of dockerfile.split("\n").filter((candidate) => candidate.startsWith("COPY "))) {
     const sources = line.trim().split(/\s+/).slice(1, -1);
     if (sources[0]?.startsWith("--from=")) {

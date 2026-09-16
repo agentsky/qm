@@ -1,4 +1,3 @@
-import { SocksProxyAgent } from "socks-proxy-agent";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import {
@@ -30,12 +29,6 @@ import { APP_SHELL_PATH_PREFIX, appShellHtml } from "../../deploy/app-shell.ts";
 import { principalDestination } from "../../reach/reach.ts";
 import { portalSessionSub } from "../../deploy/viewer-session.ts";
 import { proxyHeaders } from "../../util/http-proxy.ts";
-
-function deploymentProxyAgent(port?: number): { agent?: SocksProxyAgent } {
-  if (port === undefined) return {};
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid deployment SOCKS port");
-  return { agent: new SocksProxyAgent(`socks5h://127.0.0.1:${port}`, { keepAlive: false }) };
-}
 
 function isDeployInput(b: unknown): b is DeployInput {
   return (
@@ -410,11 +403,6 @@ function proxyReachHttp2(
   start(false);
 }
 
-// --- cold-start warming page -------------------------------------------------
-// AWS microVMs auto-resume on first connect, which can take many seconds. During
-// that window a browser navigation would otherwise hang for the full dial timeout
-// and then land on raw gateway JSON. For document requests we instead answer
-// quickly with a small self-refreshing "warming up" page.
 const WARM_RECENT_MS = 60_000;
 const COLD_FIRST_BYTE_TIMEOUT_MS = 4_000;
 const upstreamLastOk = new Map<string, number>();
@@ -553,7 +541,6 @@ async function proxyReach(
       path: subPath + url.search,
       method,
       headers,
-      ...deploymentProxyAgent(reach.endpoint.socksProxyPort),
     },
     (upRes) => {
       up.setTimeout(0);
@@ -647,7 +634,6 @@ function deploymentFetchHttp1(
         path,
         method: "GET",
         headers: { ...proxyHeaders, "accept-encoding": "identity" },
-        ...deploymentProxyAgent(endpoint.endpoint.socksProxyPort),
       },
       async (response) => {
         clearTimeout(timeout);
@@ -889,7 +875,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   if (!sub) {
     const qs = url.searchParams.toString();
     const returnTo = `https://${rawHost}${safePathname}?${qs ? `${qs}&` : ""}dpl_signin=1`;
-    const signIn = `${loginUrl}${deps.deployAppsLoginPath ?? "/auth/login"}?returnTo=${encodeURIComponent(returnTo)}`;
+    const signIn = `${loginUrl}/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
     if (!wantsHtml) {
       sendJson(res, 401, { error: "unauthorized", message: "sign-in required", loginUrl: signIn });
     } else if (signInAttempted) {
@@ -1248,7 +1234,7 @@ async function deploymentOwnerUrl(ctx: ApiCtx): Promise<void> {
   if (!gateSecret || !appsDomain)
     return sendJson(res, 503, {
       error: "unavailable",
-      message: `app subdomains are not configured — this app is reachable signed-in at /d/${slug}/; set DEPLOY_APPS_DOMAIN (with AWS_DEPLOY_GATE_SECRET) to enable per-app subdomains and live editing`,
+      message: `app subdomains are not configured — this app is reachable signed-in at /d/${slug}/; set DEPLOY_APPS_DOMAIN (with DEPLOY_GATE_SECRET) to enable per-app subdomains and live editing`,
     });
   if (!(await app.canManageDeployment(deployment.id, sub, ctx.capability?.scopeId)))
     return sendJson(res, 403, { error: "forbidden", message: "only someone who manages this app can edit it live" });

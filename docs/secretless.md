@@ -3,10 +3,12 @@
 Replacing long-lived static secrets with federated, short-lived credentials.
 
 This is the implementation plan: the full inventory, the mechanism analysis, and
-the phasing. File and line citations are against the tree at upstream
-`bfb1ed1`, synced on 2026-09-14. The proposal for upstream is
-`adrs/secretless-credentials.md`, sent on its own stack, the same argument at
-proposal length. Keep the two in step when findings change.
+the phasing. File and line citations are against this tree, after the
+deployment-path removal that deleted the `qm` CLI and the Fly, AWS, and Porter
+targets; `src/config.ts` and `src/wiring.ts` are cited by symbol rather than by
+line. The proposal for upstream is `adrs/secretless-credentials.md`, sent on its
+own stack, the same argument at proposal length. Keep the two in step when
+findings change.
 
 This plan stacks on
 [`helm-per-service-secrets.md`](./helm-per-service-secrets.md), which splits
@@ -15,46 +17,41 @@ service. Everything below assumes that has landed.
 
 ## Context
 
-QM deploys into an operator's own account and runs as a small fleet of services
+QM deploys into an operator's own cluster and runs as a small fleet of services
 that talk to each other, to Postgres, to a model provider, and to a set of
 third-party APIs. Almost all of that trust is carried by static secrets: values
 minted once by a human and injected as process environment for the life of the
 deployment.
 
 The deployment this plan is for is **Kubernetes**, through the Helm chart at
-`deploy/helm/` or the Porter manifests at `porter/apps/`. The bar is: workload
-identity federation wherever a relying party accepts an assertion, External
-Secrets Operator (ESO) everywhere else, and in every case rotation that runs
-without a human. The `qm` CLI knows nothing about Kubernetes — its targets are
-`docker`, `fly`, and `aws`[^clibackends] — so on this path there is no
-`qm secrets push`, no `.env.example` consumer, no `check --live`, and no
-per-service secret routing at all. That gap shapes Phase A.
+`deploy/helm/`, which renders two workloads: core and egress-proxy. The bar is: workload identity federation wherever a
+relying party accepts an assertion, External Secrets Operator (ESO) everywhere
+else, and in every case rotation that runs without a human.
 
-The CLI declares 41 first-party secret names[^specs]. Nine of those are not
-secret material — `PUBLIC_API_URL`, both CA certificates, `OIDC_CLIENT_ID`,
-`PORTAL_EXPECTED_TEAM_ID`, `AUTH_ALLOWED_EMAILS`, `AUTH_EMAIL_FROM`, `SMTP_HOST`,
-`SMTP_USERNAME` — leaving 32 real secrets. Twelve more live outside that list:
-`FLY_SANDBOX_API_TOKEN`, `SECURITY_SCREEN_PROXY_TOKEN`, `NPM_TOKEN` in the
-release workflow, two that core requires but the CLI never declares
-(`MODEL_GATEWAY_API_KEY`[^gateway] and `DEPLOY_APPS_SESSION_SECRET`[^deployapps]),
-and two that only exist on Kubernetes: `imagePullSecrets` and the ingress TLS
-key, four more connector client secrets the OAuth layer reads but the CLI never
-declares[^undeclaredoauth], and the trusted-entry client secret the portal
-reads[^trustedentry]. Of these, only the TLS key expires on its own,
-because cert-manager rotates it; the rest do not.
+There is no deployment CLI any more, so there is no second declaration list, no
+`.env.example` consumer, and no deploy-side secret routing outside the chart.
+The only list core keeps is `CORE_SECRET_SPECS`, which validates at
+boot[^coresecretspecs] and reaches nothing on the deploy side. The chart's
+`secretEnv` map and its per-service routing lists are the whole deploy-side
+surface, and they are typed by hand. That gap shapes Phase A.
 
-The deploy plane is already in better shape than the runtime plane. Deploying to
-AWS from GitHub Actions uses `sts:AssumeRoleWithWebIdentity` against an
-account-level GitHub OIDC provider, with audience and subject pinned and
-wildcards rejected[^oidctrust]. Image pushes use the per-job `github.token`, and
-images are signed keylessly with Fulcio and the same OIDC identity. That is the
-pattern this document extends.
+Several secrets core reads appear in neither list: `MODEL_GATEWAY_API_KEY`[^gateway],
+`DEPLOY_APPS_SESSION_SECRET`[^deployapps], `SECURITY_SCREEN_PROXY_TOKEN`, four
+connector client secrets the OAuth layer reads[^undeclaredoauth], and two that
+only exist on Kubernetes: `imagePullSecrets` and the ingress TLS key. Of all of
+them, only the TLS key expires on its own, because cert-manager rotates it; the
+rest do not.
+
+The build plane is already in better shape than the runtime plane. Image pushes
+use the per-job `github.token`, and images are signed keylessly with Fulcio and
+the job's own OIDC identity[^release]. That is the pattern this document
+extends.
 
 A note on vocabulary. "OIDC" already appears throughout this codebase meaning
-_human_ sign-in: the portal's relying-party configuration, the built-in `auth`
-broker, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`. This document uses **WIF**
-(workload identity federation) for the machine-to-machine case to keep the two
-apart. They share a protocol and share nothing else.
+_human_ sign-in: connector OAuth, and whatever identity source sits in front of
+the deployment. This document uses **WIF** (workload identity federation) for
+the machine-to-machine case to keep the two apart. They share a protocol and
+share nothing else.
 
 ## Goals
 
@@ -70,14 +67,14 @@ apart. They share a protocol and share nothing else.
 
 ## Non-goals
 
-- Rewriting how _user_ sign-in works. The portal, the `auth` broker, and
-  connector OAuth stay as they are.
+- Rewriting how _user_ sign-in works. Core verifies a signed identity header and
+  connector OAuth stays as it is; what mints that header is outside this design,
+  and B1 says what it must satisfy.
 - Changing how credentials are materialized into agent sandboxes. That surface
   has its own acknowledged limitations[^security] and its own broker-delivery
   path, which this design reuses but does not redesign.
-- Adding a new secrets product on ECS or Fly, where the platform's own STS and
-  KMS cover what is needed. On Kubernetes, ESO is not a new product; it is the
-  standard carrier, and this design depends on it.
+- Adding a new secrets product. ESO is not a new product; it is the standard
+  carrier on Kubernetes, and this design depends on it.
 - Inventing federation where no vendor offers it. Slack does not federate and
   neither does OpenRouter; those are contained, not removed. Anthropic and OpenAI
   both do, which is Phase B5.
@@ -88,124 +85,103 @@ apart. They share a protocol and share nothing else.
 graph TB
   subgraph Build["Build and release plane"]
     GHA["GitHub Actions"]
-    NPM["npm registry"]
     GHCR["ghcr.io"]
   end
 
   subgraph Deploy["Deploy plane"]
-    Helm["helm values secretEnv<br/>or porter apply --secrets"]
-    TF["Terraform (ECS reference)"]
-    SM["AWS Secrets Manager<br/>or Fly secrets"]
+    Helm["helm values secretEnv"]
   end
 
   subgraph Runtime["Runtime plane on Kubernetes"]
     SecC[("core-env")]
-    SecP[("portal-env")]
-    SecW[("web-ui-env")]
     SecE[("egress-proxy-env")]
     Core["core"]
-    Portal["portal (Internet-facing)"]
-    Web["web-ui"]
     Egress["egress-proxy"]
     PG[("Postgres")]
-    Vendors["model provider<br/>Porter API<br/>Slack, Resend, connectors"]
+    Vendors["model provider<br/>Slack, connectors<br/>sandbox vendors"]
   end
 
   GHA -->|"github.token — ephemeral"| GHCR
-  GHA -->|"NPM_TOKEN — static"| NPM
-  GHA -->|"AssumeRoleWithWebIdentity — ephemeral"| TF
-  TF -->|"random_password into DATABASE_URL"| SM
-    Helm -->|"routed per service"| SecC
-  Helm -->|"routed per service"| SecP
-  Helm -->|"routed per service"| SecW
+  GHA -->|"Fulcio keyless signature — ephemeral"| GHCR
+  Helm -->|"routed per service"| SecC
   Helm -->|"routed per service"| SecE
   SecC -->|"envFrom"| Core
-  SecP -->|"envFrom"| Portal
-  SecW -->|"envFrom"| Web
   SecE -->|"envFrom"| Egress
-  Portal <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
-  Web <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
+  Egress <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
+  Egress <-->|"CORE_SIGNING_SECRET — one shared HMAC"| Core
   Core -->|"password in connection string"| PG
   Core -->|"static API keys"| Vendors
 
   classDef good fill:#1b4332,stroke:#2d6a4f,color:#fff
   classDef bad fill:#5c1a1a,stroke:#8b2c2c,color:#fff
-  class GHCR,TF good
-  class NPM,SM,SecC,SecP,SecW,SecE,PG,Vendors,Portal,Web,Egress bad
+  class GHCR good
+  class SecC,SecW,SecE,PG,Vendors,Web,Egress bad
 ```
 
-The two green nodes are reached with ephemeral, federated credentials. Every
+The one green node is reached with ephemeral, federated credentials. Every
 other path rests on a value a human minted that does not expire.
 
 ### The Helm chart, after the per-workload split
 
 The worst finding in the first draft of this plan was that the chart rendered
-`secretEnv` into one `Secret` and attached it to every Deployment, so the
-Internet-facing portal pod held the database, model, and Porter credentials.
-That is fixed by the per-workload split[^split], which lands before this plan
-and which this plan does not repeat. What the split leaves for the phases
-below:
+`secretEnv` into one `Secret` and attached it to every Deployment, so every pod
+held the database and model credentials. That is fixed by the per-workload
+split[^split], which lands before this plan and which this plan does not repeat.
+What the split leaves for the phases below:
 
 - The values are still static and still typed into `secretEnv` by hand. The
   split decides which pod gets a value, not where the value comes from.
-- The routing lists in `services.<name>.secrets` are maintained by hand. The
-  CLI's spec list knows the same routing for every service it declares, and
-  the CLI has no Kubernetes target to render it with[^clibackends]. A1 closes
-  that.
+- The routing lists in `services.<name>.secrets` are maintained by hand, and
+  with the CLI gone there is no other list to render them from. A1 gives them
+  one.
 - Two reads the split's routing table surfaced stay in the inventory:
   egress-proxy reads `CAPABILITY_SECRET` and `CORE_SIGNING_SECRET` (and
   `DATABASE_URL` only as a fallback audit sink the chart never leaves it
-  with) while the CLI does not know the service exists, and core reads
-  `PORTAL_SESSION_SECRET` as the fallback for an undeclared
-  `DEPLOY_APPS_SESSION_SECRET`.
-- Per-surface identity in Phase B1 would have bought nothing while every
-  surface held every secret. That is why the split lands first.
+  with), and core reads `DEPLOY_APPS_SESSION_SECRET`, which no declaration
+  list mentions.
+- Per-workload identity in Phase B1 would have bought nothing while every
+  workload held every secret. That is why the split lands first.
 
 ### The service-to-service case
 
 `CORE_SIGNING_SECRET` is a single symmetric HMAC key shared by core and _every_
-surface plugin — `portal`, `web-ui`, `admin`, `auth`, `slack`, and any plugin the
-deployment adds, since `computedSecrets` grants it to each plugin with
-`coreAccess` left on[^computed]. The chassis reads it from process environment
-and signs every core call with it[^chassis].
+caller — the egress proxy, and any surface or integration the deployment puts in
+front of core. A caller reads it from process environment and signs every core
+call with it[^chassis].
 
 The consequences are structural, not hypothetical:
 
 - Verification is symmetric, so any holder can forge any other holder's
-  requests. A compromised `admin` container can sign as `portal`.
+  requests. A compromised `egress-proxy` container can sign as any surface.
 - The signature carries no caller identity[^sourceauth]. Core cannot tell which
-  surface called it, only that _a_ holder did.
+  caller called it, only that _a_ holder did.
 - Rotation is a fleet-wide atomic event. There is no overlap window, because
   there is one key and one value.
 
-`PORTAL_IDENTITY_SECRET` has the same shape in the same direction: the portal
-mints a signed user identity and core and admin verify it[^portalmint]. It is a
+`PORTAL_IDENTITY_SECRET` has the same shape in the same direction, minus a
+producer. Core verifies a signed user identity carried in
+the `x-portal-identity` header[^portalverify], and the portal that used to mint
+it has been removed with the rest of the proprietary deployment paths. It is a
 genuinely distinct key — core refuses to start in production if it is unset or
 equal to `CORE_SIGNING_SECRET` or `CAPABILITY_SECRET`[^portalguard] — but it is
-still symmetric, still shared across four services, and still rotated
-atomically. Upstream's trusted-entry PoC adds a third use of it: after a
-verified trusted OIDC sign-in the portal signs a purpose-bound, 60-second,
-single-use HS256 assertion with `PORTAL_IDENTITY_SECRET` and core verifies it
-before granting organization admin, refusing unless the secret is at least 32
-characters, distinct from `CORE_SIGNING_SECRET`, and backed by a durable replay
-store[^trustedadmin]. Same key, same direction. That assertion — `purpose`,
-`exp` within a minute, `jti` claimed once in a durable store — is the exact
-shape B1's per-call tokens and B5's per-exchange tokens need, and it now exists
-in the tree.
+still symmetric, still shared with whatever is put in front of core, and still
+rotated atomically — and since the portal's removal nothing signs that header
+with it. The verifier is the
+seam a future identity source at the ingress has to satisfy, which is why B1
+treats filling that gap as part of its work rather than as someone else's.
 
 ### The rotation trap
 
-Ten secrets are symmetric keys verified against exactly one value. Call them
+Six secrets are symmetric keys verified against exactly one value. Call them
 the **single-value set**: `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`,
-`PORTAL_IDENTITY_SECRET`, `SKILL_SIGNING_SECRET`, `AUTH_TOKEN_SECRET`,
-`AUTH_CLIENT_SECRET`, `PORTAL_SESSION_SECRET`, `DEPLOY_APPS_SESSION_SECRET`,
-`AWS_DEPLOY_GATE_SECRET`, and `CONNECTOR_SECRET_KEY`. Later phases refer to this
-set by name; it shrinks as B1 deletes the first three.
+`PORTAL_IDENTITY_SECRET`, `SKILL_SIGNING_SECRET`, `DEPLOY_APPS_SESSION_SECRET`,
+and `CONNECTOR_SECRET_KEY`. Later phases refer to this set by name; it shrinks
+as B1 deletes the first three.
 
 ESO rotating the Kubernetes Secret and a reloader rolling the pods gives a
-window in which core verifies with the new key while portal still signs with
+window in which core verifies with the new key while a surface still signs with
 the old one, or the reverse. For the HMACs that is a signature-mismatch outage.
-For the cookie keys it invalidates every session. For `CONNECTOR_SECRET_KEY` it
+For the cookie key it invalidates every session. For `CONNECTOR_SECRET_KEY` it
 makes every stored connector credential undecryptable. So ESO alone cannot meet
 the rotation bar for this family; the application has to change first.
 
@@ -219,49 +195,36 @@ the pods on its own.
 
 Tiers are defined in the next section.
 
-| Secret                                                                                                           | Where it lives                                                                                                                     | Today                                                                                                                                                                                                                                                              | Tier  |
-| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
-| AWS deploy role                                                                                                  | `main.tf:311`                                                                                                                      | GitHub OIDC, subject + audience pinned                                                                                                                                                                                                                             | 0     |
-| GHCR push                                                                                                        | `release-package.yml`                                                                                                              | `github.token`, per-job                                                                                                                                                                                                                                            | 0     |
-| Cosign signing key                                                                                               | `release-package.yml`                                                                                                              | keyless, Fulcio + OIDC                                                                                                                                                                                                                                             | 0     |
-| Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer`                                                                                                      | cert-manager issues and rotates                                                                                                                                                                                                                                    | 0     |
-| `CORE_SIGNING_SECRET`                                                                                            | core, portal, web-ui, egress-proxy                                                                                                 | shared static HMAC                                                                                                                                                                                                                                                 | 1     |
-| `PORTAL_IDENTITY_SECRET`                                                                                         | core, portal, web-ui                                                                                                               | shared static HMAC, portal mints                                                                                                                                                                                                                                   | 1     |
-| `DATABASE_URL`                                                                                                   | core                                                                                                                               | static password, no rotation path                                                                                                                                                                                                                                  | 1     |
-| `PORTER_DEPLOY_API_TOKEN`                                                                                        | core                                                                                                                               | Admin-role token; used for sandboxes and for app publishing[^porterboth]                                                                                                                                                                                           | 1     |
-| `NPM_TOKEN`                                                                                                      | `publish-cli.yml:89`                                                                                                               | static automation token                                                                                                                                                                                                                                            | 1     |
-| `imagePullSecrets`                                                                                               | `values.yaml`                                                                                                                      | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                                                                                                                                                                        | 1     |
-| `CONNECTOR_SECRET_KEY`                                                                                           | core                                                                                                                               | static encryption key, one value                                                                                                                                                                                                                                   | 2     |
-| `AUTH_SIGNING_JWK`                                                                                               | portal                                                                                                                             | static P-256 private key                                                                                                                                                                                                                                           | 2     |
-| `CAPABILITY_SECRET`                                                                                              | core, egress-proxy                                                                                                                 | static HMAC, one value                                                                                                                                                                                                                                             | 2     |
-| `SKILL_SIGNING_SECRET`                                                                                           | core                                                                                                                               | static HMAC, one value                                                                                                                                                                                                                                             | 2     |
-| `AUTH_TOKEN_SECRET`                                                                                              | portal                                                                                                                             | static HMAC, one value                                                                                                                                                                                                                                             | 2     |
-| `PORTAL_SESSION_SECRET`                                                                                          | portal; core as a fallback                                                                                                         | static cookie key, one value                                                                                                                                                                                                                                       | 2     |
-| `DEPLOY_APPS_SESSION_SECRET`                                                                                     | core                                                                                                                               | static cookie key, undeclared by the CLI                                                                                                                                                                                                                           | 2     |
-| `AWS_DEPLOY_GATE_SECRET`                                                                                         | core                                                                                                                               | static HMAC, one value                                                                                                                                                                                                                                             | 2     |
-| `AUTH_CLIENT_SECRET`                                                                                             | portal                                                                                                                             | CLI-generated; becomes in-process after B1, never deployed                                                                                                                                                                                                         | 1     |
-| `DATABASE_POOL_URL`                                                                                              | core                                                                                                                               | must carry the same credentials as `DATABASE_URL`                                                                                                                                                                                                                  | 2     |
-| `FLY_DEPLOY_API_TOKEN`, `FLY_SANDBOX_API_TOKEN`                                                                  | core for the deploy token; the sandbox token is used by the CLI preflight only, so neither reaches a workload Secret on Kubernetes | minted at `-x 8760h`[^flytokens]                                                                                                                                                                                                                                   | 2     |
-| `ANTHROPIC_API_KEY`                                                                                              | core                                                                                                                               | static vendor key; Anthropic WIF is GA                                                                                                                                                                                                                             | 1     |
-| `OPENAI_API_KEY`                                                                                                 | core                                                                                                                               | static vendor key; OpenAI WIF is GA                                                                                                                                                                                                                                | 1     |
-| `OPENROUTER_API_KEY`                                                                                             | core                                                                                                                               | rotatable through its management-keys API; root in the rotation Job                                                                                                                                                                                                | 2     |
-| `MODEL_GATEWAY_API_KEY`                                                                                          | core                                                                                                                               | static bearer, undeclared by the CLI                                                                                                                                                                                                                               | 3     |
-| `SLACK_BOT_TOKEN`                                                                                                | durable store                                                                                                                      | Slack token rotation, opt-in; needs refresh handling in the installation store                                                                                                                                                                                     | 2     |
-| `SLACK_APP_TOKEN`                                                                                                | durable store                                                                                                                      | encrypted at rest, no vendor rotation API                                                                                                                                                                                                                          | 3     |
-| `SLACK_SIGNING_SECRET`                                                                                           | core, env only                                                                                                                     | no stored path, no vendor rotation API                                                                                                                                                                                                                             | 3     |
-| `SPRITES_TOKEN`, `E2B_API_KEY`, `MODAL_TOKEN_*`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY`                         | core                                                                                                                               | dashboard-minted; moot on this path once B4 lands                                                                                                                                                                                                                  | 3     |
-| `SECURITY_SCREEN_PROXY_TOKEN`                                                                                    | core                                                                                                                               | static bearer to a third-party screen                                                                                                                                                                                                                              | 3     |
-| `RESEND_API_KEY`                                                                                                 | core, portal                                                                                                                       | rotatable through Resend's API; root in the rotation Job; both mailers capture it at construction, so restart-required until A1 reaches them                                                                                                                       | 2     |
-| `SMTP_PASSWORD`                                                                                                  | portal                                                                                                                             | on SES, derived with `SMTP_USERNAME` from one IAM access key, rotated as a pair through the published rotation (Tier 2); on any other relay, dashboard-minted (Tier 3); the auth mailer captures the pair at construction, so restart-required until A1 reaches it | 2 / 3 |
-| `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                                                    | core                                                                                                                               | ESO-carried; human-rotated at the IdP, propagates restart-free; PKCE public client removes it where the IdP permits                                                                                                                                                | 2     |
-| `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` | core                                                                                                                               | same as above, and undeclared by the CLI                                                                                                                                                                                                                           | 2     |
-| `OIDC_CLIENT_SECRET` (external IdP)                                                                              | portal                                                                                                                             | ESO-carried, restart-required until A1 reaches the portal; `private_key_jwt` removes it where the IdP supports it                                                                                                                                                  | 2     |
-| `PORTAL_TRUSTED_OIDC_CLIENT_SECRET`                                                                              | portal                                                                                                                             | trusted-entry PoC; static OAuth client secret, 32+ chars, distinct from the other three; undeclared by the CLI; ESO-carried, restart-required until A1 reaches the portal                                                                                          | 2     |
+| Secret                                                                                                           | Where it lives                | Today                                                                                                                                                | Tier |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| GHCR push                                                                                                        | `release-package.yml`         | `github.token`, per-job                                                                                                                              | 0    |
+| Cosign signing key                                                                                               | `release-package.yml`         | keyless, Fulcio + OIDC                                                                                                                               | 0    |
+| Ingress TLS key                                                                                                  | `values.yaml` `clusterIssuer` | cert-manager issues and rotates                                                                                                                      | 0    |
+| `CORE_SIGNING_SECRET`                                                                                            | core, egress-proxy            | shared static HMAC                                                                                                                                   | 1    |
+| `PORTAL_IDENTITY_SECRET`                                                                                         | core                          | static HMAC, verified by core and minted nowhere since the portal was removed                                                                        | 1    |
+| `DATABASE_URL`                                                                                                   | core                          | static password, no rotation path                                                                                                                    | 1    |
+| `imagePullSecrets`                                                                                               | `values.yaml`                 | PAT in a `dockerconfigjson` Secret on private forks; kubelet credential provider removes it                                                          | 1    |
+| `ANTHROPIC_API_KEY`                                                                                              | core                          | static vendor key; Anthropic WIF is GA                                                                                                               | 1    |
+| `OPENAI_API_KEY`                                                                                                 | core                          | static vendor key; OpenAI WIF is GA                                                                                                                  | 1    |
+| `CONNECTOR_SECRET_KEY`                                                                                           | core                          | static encryption key, one value                                                                                                                     | 2    |
+| `CAPABILITY_SECRET`                                                                                              | core, egress-proxy            | static HMAC, one value                                                                                                                               | 2    |
+| `SKILL_SIGNING_SECRET`                                                                                           | core                          | static HMAC, one value                                                                                                                               | 2    |
+| `DEPLOY_APPS_SESSION_SECRET`                                                                                     | core                          | static cookie key, declared by no list                                                                                                               | 2    |
+| `DEPLOY_GATE_SECRET`                                                                                             | core                          | static HMAC behind per-app subdomains, one value                                                                                                     | 2    |
+| `DATABASE_POOL_URL`                                                                                              | core                          | must carry the same credentials as `DATABASE_URL`                                                                                                    | 2    |
+| `OPENROUTER_API_KEY`                                                                                             | core                          | rotatable through its management-keys API; root in the rotation Job                                                                                  | 2    |
+| `MODEL_GATEWAY_API_KEY`                                                                                          | core                          | static bearer, declared by no list                                                                                                                   | 3    |
+| `SLACK_BOT_TOKEN`                                                                                                | durable store                 | Slack token rotation, opt-in; needs refresh handling in the installation store                                                                       | 2    |
+| `SLACK_APP_TOKEN`                                                                                                | durable store                 | encrypted at rest, no vendor rotation API                                                                                                            | 3    |
+| `SLACK_SIGNING_SECRET`                                                                                           | core, env only                | no stored path, no vendor rotation API                                                                                                               | 3    |
+| `E2B_API_KEY`, `MODAL_TOKEN_*`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY`                                          | core                          | dashboard-minted; moot on this path once B4 lands                                                                                                    | 3    |
+| `SECURITY_SCREEN_PROXY_TOKEN`                                                                                    | core                          | static bearer to a third-party screen                                                                                                                | 3    |
+| `RESEND_API_KEY`                                                                                                 | core                          | rotatable through Resend's API; root in the rotation Job; the invitation mailer captures it at construction, so restart-required until A1 reaches it | 2    |
+| `GOOGLE_/DROPBOX_/LINEAR_OAUTH_CLIENT_SECRET`                                                                    | core                          | ESO-carried; human-rotated at the IdP, propagates restart-free; PKCE public client removes it where the IdP permits                                  | 2    |
+| `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` | core                          | same as above, and declared by no list                                                                                                               | 2    |
 
 The "where it lives" column is the Helm chart after the per-workload
-split[^split]. Under Porter the operator passes each value by hand with
-`--secrets`, which lets them scope it the same way, but nothing enforces the
-scoping.
+split[^split].
 
 ## The tiering
 
@@ -270,8 +233,8 @@ stateDiagram-v2
   [*] --> T0
   T0: Tier 0 — already federated<br/>keep, and use as the template
   T1: Tier 1 — federate<br/>the relying party accepts an assertion
-  T2: Tier 2 — carry and rotate<br/>ESO on Kubernetes, KMS on ECS, made safe by multi-key verification
-  T3: Tier 3 — irreducible<br/>contain, scope, and report age
+  T2: Tier 2 — carry and rotate<br/>ESO with a refresh interval, made safe by multi-key verification
+  T3: Tier 3 — irreducible<br/>contain and scope
   T0 --> T1: extend the pattern
   T1 --> T2: relying party wants a value
   T2 --> T3: vendor offers no rotation API
@@ -283,19 +246,18 @@ rotate.
 
 **Tier 2 — carry and rotate.** The relying party wants a value, but the value
 can be minted or held somewhere with an audit trail and delivered short-lived.
-On Kubernetes the carrier is an `ExternalSecret` per service with a
-`refreshInterval`, whose `SecretStore` authenticates to the cloud secret manager
-through IRSA, EKS Pod Identity, GKE Workload Identity, or Azure Workload
-Identity — no static credential for the store itself. On ECS the equivalent is
-a KMS-held key the task role calls. Either way, automatable rotation requires
-the multi-key verification in Phase A first.
+The carrier is an `ExternalSecret` per service with a `refreshInterval`, whose
+`SecretStore` authenticates to the cloud secret manager through IRSA, EKS Pod
+Identity, GKE Workload Identity, or Azure Workload Identity — no static
+credential for the store itself. Automatable rotation requires the multi-key
+verification in Phase A first.
 
 **Tier 3 — irreducible.** The vendor mints the credential in a dashboard and
 offers no API to rotate it. Keep it out of process environment, deliver it
-through the egress-proxy broker path where the consumer is an agent, scope it
-as narrowly as the vendor allows, and have `qm doctor` report its age. That
-report is the ceiling for this tier and the doc should say so rather than
-imply more.
+through the egress-proxy broker path where the consumer is an agent, and scope
+it as narrowly as the vendor allows. Earlier revisions leaned on a `qm doctor`
+age report as this tier's ceiling; that command went with the CLI, so nothing
+reports age today and the doc should say so rather than imply more.
 
 The success metric is the size of Tier 3 after the work, not the number of
 mechanisms introduced.
@@ -306,41 +268,37 @@ mechanisms introduced.
 
 Two pieces of groundwork, both prerequisites for everything after them.
 
-**A1: build the seam that does not exist yet.** There are three candidate
-chokepoints and none is universal:
+**A1: build the seam that does not exist yet.** There are two candidate
+chokepoints and neither is universal:
 
 | Candidate                                                  | Actual reach                                                                                                                                                                                                                           |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FIRST_PARTY_SECRET_SPECS` (`cli/src/secrets.ts:43`)       | Deploy-side only: renders `.env.example`, Terraform `secret_names`, and ECS task secret routing. Nothing in `src/` imports it. Reaches nothing on Kubernetes.                                                                          |
-| `CORE_SECRET_SPECS` (`src/deployment/secret-schema.ts:29`) | Boot-time validation only, and it is a _separate list with a separate type_. Nothing in `cli/` imports it.                                                                                                                             |
+| `CORE_SECRET_SPECS` (`src/deployment/secret-schema.ts:29`) | Boot-time validation only. It names a subset of what core reads and nothing on the deploy side consumes it.                                                                                                                            |
 | `SecretSource` (`src/credentials/secret-source.ts`)        | Connector OAuth clients only[^secretsource]. Core's own secrets never pass through it — `CORE_SIGNING_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `DATABASE_URL` and the model keys are read straight from `process.env`. |
 
-So A1 reconciles the two declaration lists into one, widens `SecretSource` until
-core reads its own secrets through it, and — this is the part the ECS-shaped
-first draft missed — gives that list a Kubernetes emitter. The per-workload
-split gave the chart a hand-maintained routing list per service, and the spec
-already knows the same routing for every service the CLI declares. A1 renders
-those lists, and later the per-service `ExternalSecret`s, from the spec
-instead of maintaining them by hand. Until the seam emits something the chart
-consumes, marking a spec federated reaches nothing on this path.
+So A1 widens the boot-time list until it names every secret core reads, widens
+`SecretSource` until core reads its own secrets through it, and gives that one
+list a Kubernetes emitter. The per-workload split gave the chart a
+hand-maintained routing list per service; A1 renders those lists, and later the
+per-service `ExternalSecret`s, from the spec instead of maintaining them by
+hand. Until the seam emits something the chart consumes, marking a spec
+federated reaches nothing.
 
 ```mermaid
 graph TB
   subgraph Now["Today"]
-    A1["cli/src/secrets.ts<br/>SecretSpec"]
-    B1["src/deployment/secret-schema.ts<br/>RuntimeSecretSpec"]
+    B1["src/deployment/secret-schema.ts<br/>RuntimeSecretSpec, boot validation only"]
     C1["src/config.ts<br/>reads process.env directly"]
     D1["src/credentials/secret-source.ts<br/>connector clients only"]
     H1["deploy/helm/values.yaml<br/>hand-maintained services.*.secrets"]
   end
 
   subgraph After["After Phase A"]
-    A2["one shared spec list<br/>with a federation field"]
+    A2["one spec list<br/>with a federation field"]
     D2["CredentialSource<br/>every secret flows through"]
     H2["per-service ExternalSecret<br/>rendered from the spec"]
   end
 
-  A1 --> A2
   B1 --> A2
   C1 --> D2
   D1 --> D2
@@ -356,19 +314,12 @@ export interface CredentialSource {
 }
 ```
 
-`createEnvSecretSource` and `createAwsSecretsManagerSource` become
-implementations of it. The Secrets Manager source already caches with a
-60-second TTL and tolerates staleness for 15 minutes, so the shape federated
-credentials need is already written. On EKS, `SECRETS_BACKEND=aws` under IRSA
-already reads Secrets Manager from core with no credential[^secretsbackend];
-extending that to core's own secrets means a rotated value reaches a running pod
-within the cache TTL, with no restart and no reloader. `SECRETS_BACKEND` knows
-only `env` and `aws`, so GCP and Azure clusters go through ESO regardless — and
-there the seam reads from a **file-mounted Secret** rather than `envFrom`. The
-kubelet updates a mounted Secret file in place; environment variables never
-change after the process starts. That is the Kubernetes rotation-without-restart
-primitive, it generalizes to every value core reads through the seam, and it
-removes the reloader from the risk table for those entries.
+`createEnvSecretSource` becomes an implementation of it. The seam reads from a
+**file-mounted Secret** rather than `envFrom`: the kubelet updates a mounted
+Secret file in place, while environment variables never change after the
+process starts. That is the Kubernetes rotation-without-restart primitive, it
+generalizes to every value core reads through the seam, and it removes the
+reloader from the risk table for those entries.
 
 The seam selects its source at boot: a projected token file present means
 federation, otherwise the environment. The `dev-instance` launcher reads shell
@@ -377,15 +328,14 @@ static path with no cluster and no cloud identity, which is what the dual-read
 rule requires anyway.
 
 **A2: key rollover with prepare, activate, retire.** The application change
-that makes rotation safe on every substrate. The naive form — each verifier
-accepts current plus previous and signs with the first — is not enough. It
-handles an old signature reaching an updated verifier; it does not handle a new
-signature reaching a verifier that has not updated yet. A portal that has
-refreshed to `[K1, K0]` signs with `K1`; a core replica still on `[K0, K−1]`
-cannot verify it. The same ordering breaks cookie verification between
-replicas and leaves a row encrypted by an updated writer unreadable by an older
-reader. File-mounted delivery changes how instances receive keys, not the order
-in which they do.
+that makes rotation safe. The naive form — each verifier accepts current plus
+previous and signs with the first — is not enough. It handles an old signature
+reaching an updated verifier; it does not handle a new signature reaching a
+verifier that has not updated yet. A caller that has refreshed to `[K1, K0]`
+signs with `K1`; a core replica still on `[K0, K−1]` cannot verify it. The same
+ordering breaks cookie verification between replicas and leaves a row encrypted
+by an updated writer unreadable by an older reader. File-mounted delivery
+changes how instances receive keys, not the order in which they do.
 
 So the active producing key is distinct from the accepted set, and rollover is
 three steps. **Prepare**: distribute the new key into every instance's accepted
@@ -398,29 +348,25 @@ barrier such as a full rolling restart with the accepted set already updated.
 produced has expired or been migrated — for HMAC tokens their TTL, for cookies
 the session lifetime, and for `CONNECTOR_SECRET_KEY` every stored row
 re-encrypted under the new key id, including rows in retained backups, which
-outlive the live table. The auth broker's JWKS serves the retiring `kid`
-through the same window.
+outlive the live table.
 
 Acceptance test: refresh a producer before a verifier, in both directions, then
 roll back mid-rotation. The scheme passes only if every ordering verifies.
 
 The fallback read path — federated attempted, static accepted — is instrumented
 in A1 to report when it fires. Removing a fallback needs evidence nothing uses
-it, and `check --live` does not provide that even on the targets where it
-exists[^checklive].
+it, and nothing in the tree reports that today.
 
 ### Phase B1: per-workload identity
 
 Replace the shared HMAC with a per-workload assertion that core verifies without
-a shared key. The mechanism depends on the substrate, and the substrate this
-plan is for has the best one.
+a shared key. The workloads are core and egress-proxy, plus whatever surface the
+deployment puts in front of core.
 
-| Substrate      | Mechanism                                                                                                                                                                                                                                                                                | Secret material |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| **Kubernetes** | Each surface gets its own ServiceAccount and a projected token volume with `audience: qm-core` and a short `expirationSeconds`. The kubelet rotates it. The surface sends it as a bearer; core verifies through the `TokenReview` API or the cluster issuer's JWKS, cached.              | none            |
-| ECS            | Each surface runs under its own task role and calls `sts:GetWebIdentityToken` with `aud: qm-core`; core verifies against the account's STS issuer JWKS. Outbound web identity federation must be enabled on the account. KMS signing is the fallback where it is not.                    | none            |
-| Fly            | Fly Machines mint OIDC tokens with a caller-chosen audience, issuer `https://oidc.fly.io/<org>`, subject `org:app:machine`, and `app_name` and `image_digest` claims, with public discovery. Verified through the JWKS verifier rather than `TokenReview`. Upstream-only for this layer. | none            |
-| Docker         | HMAC path kept, selected by the same `federation` field. Local development stays here.                                                                                                                                                                                                   | shared key      |
+| Substrate      | Mechanism                                                                                                                                                                                                                                                                     | Secret material |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| **Kubernetes** | Each workload gets its own ServiceAccount and a projected token volume with `audience: qm-core` and a short `expirationSeconds`. The kubelet rotates it. The workload sends it as a bearer; core verifies through the `TokenReview` API or the cluster issuer's JWKS, cached. | none            |
+| Docker         | HMAC path kept, selected by the same `federation` field. Local development stays here.                                                                                                                                                                                        | shared key      |
 
 **Bearer mode has a transport prerequisite that HMAC mode does not.** The
 chart wires every inter-service URL as plain `http://`[^plainhttp], and the
@@ -449,105 +395,75 @@ unreachable, fails closed past it, and never reinterprets an explicit rejection
 as success through the weaker offline path. API unavailability and a known
 rejection are different outcomes and are handled differently.
 
-The Kubernetes row is the primary design. It is the feature ECS lacks — an
-issuer that mints a verifiable, audience-scoped assertion for a workload — and
-it is GA on every cluster Porter can create.
-
 ```mermaid
 sequenceDiagram
   autonumber
-  participant P as portal pod
+  participant W as surface pod
   participant K as kubelet
   participant Core as core
   participant API as kube-apiserver
 
-  Note over P: ServiceAccount portal<br/>projected token, aud qm-core, 15 min
-  K-->>P: token file rotated before expiry
-  P->>Core: GET /v1/surface-config<br/>Authorization: Bearer token
+  Note over W: its own ServiceAccount<br/>projected token, aud qm-core, 15 min
+  K-->>W: token file rotated before expiry
+  W->>Core: GET /v1/surface-config<br/>Authorization: Bearer token
   Core->>API: TokenReview
-  API-->>Core: authenticated, system:serviceaccount:ns:portal
+  API-->>Core: authenticated, system:serviceaccount:ns:surface
   Core->>Core: map SA to surface, authorize
-  Core-->>P: 200
+  Core-->>W: 200
 ```
 
 Concretely for the chart: `serviceAccount` in `values.yaml` is one SA for every
-workload[^helmsa], so the Kubernetes equivalent of "split per-surface task
-roles" is per-service ServiceAccounts in `templates/serviceaccount.yaml`. The
-chassis needs one more auth mode next to HMAC that reads the token from the
-projected file, and core needs a `TokenReview` verifier next to
-`verifySignature`. Core's own SA needs one RBAC grant to create `TokenReview`s.
+workload[^helmsa], so B1 is per-service ServiceAccounts in
+`templates/serviceaccount.yaml`. Callers need one more auth mode next to
+HMAC that reads the token from the projected file, and core needs a
+`TokenReview` verifier next to `verifySignature`. Core's own SA needs one RBAC
+grant to create `TokenReview`s.
 
 What this buys, beyond deleting a secret:
 
-- Core learns _which_ surface is calling and can authorize per-surface. The
-  `admin` container can no longer sign as `portal`.
+- Core learns _which_ workload is calling and can authorize per-workload. The
+  egress proxy can no longer sign as a surface.
 - Tokens expire on their own and the kubelet rotates them. Nothing is minted,
   stored, or rotated by anyone.
 - The mechanism exists today with zero new infrastructure.
 
-**ECS has an issuer after all.** The first drafts said STS consumes a web
-identity token and cannot mint one. That is outdated. `sts:GetWebIdentityToken`
-returns a short-lived JWT signed by AWS that asserts the caller's IAM identity,
-with a caller-chosen audience and duration, verifiable through a per-account
-issuer at `https://<uuid>.tokens.sts.global.api.aws` that serves a public
-JWKS[^stswebid]. The `sub` is the calling role's ARN, and an
-`https://sts.amazonaws.com/` claim carries `aws_account`, `org_id`, and
-`principal_id`. It needs the account-level outbound-federation flag, off by
-default; the `sts:GetWebIdentityToken` permission on the task role; and a
-regional STS endpoint. With that, an ECS surface mints `aud: qm-core` from its
-own task role and core verifies it against the account issuer's JWKS exactly as
-it verifies a Kubernetes token against the cluster issuer's — one verifier, two
-issuers. Per-surface task roles remain a prerequisite, because the `sub` is the
-role and the reference module shares one `task` role across every non-core
-service[^taskroles]. KMS signing stays as the fallback where outbound
-federation is unavailable or deliberately disabled, and the SigV4
-`GetCallerIdentity` replay is no longer worth its STS call on the request path.
-
-**`PORTAL_IDENTITY_SECRET` collapses into this.** Today the portal mints a
-signed user identity and core verifies it. Once core knows which ServiceAccount
-is calling, the user claims are a payload that SA asserts, and the authorization
-question becomes "may this SA assert user identities?" — a per-surface
-permission, not a second key. On ECS the same holds under KMS: the portal holds
-`kms:Sign` on its key, core holds the public half. Under no scheme does core
-need a signing key for this. The trusted-entry admin assertion loses its HMAC the same way and keeps
-everything else. Once core knows the calling ServiceAccount is the portal,
-the claim that a trusted sign-in just succeeded needs no signature of its
-own; it still needs its purpose binding, its 60-second expiry, and its
-single-use `jti` claimed in the durable replay store before the grant is
-provisioned, exactly as the handler does today[^trustedadmin]. `TokenReview`
-authenticates the workload token; it does not consume a privileged operation
-and it does not remember that one already ran. The same ServiceAccount token
-serves any number of distinct operations, and the same operation must not
-become reusable across replicas or restarts, so operation-level freshness and
-deduplication stay where they are, independent of how the caller
-authenticated. The portal already verifies OIDC id_tokens against a JWKS for both of
-its sign-in routes[^portaljwks]; core's B1 verifier for the cluster, STS, and
-Fly issuers is that operation with a different issuer, and the chassis is the
-sanctioned place to share it.
+**`PORTAL_IDENTITY_SECRET` is the gap B1 has to close, not just a key it
+deletes.** Core verifies the `x-portal-identity` header
+under that key[^portalverify]; the portal that minted it was removed with the
+proprietary deployment paths, so the deployment currently has a verifier with no
+producer and user identity has to arrive some other way. Per-workload identity
+answers half of it: once core knows which ServiceAccount is calling, the user
+claims are a payload that SA asserts, and the authorization question becomes
+"may this SA assert user identities?" — a per-surface permission, not a second
+key. The other half is that some workload at the ingress has to authenticate the
+human in the first place. B1 specifies the seam rather than the source: whatever
+sits at the ingress authenticates the user, calls core under its own
+ServiceAccount token, and core mints from there. Under no scheme does core need
+a symmetric signing key for this.
 
 **Delegation through intermediaries is a separate decision, and this is
-it.** "The calling ServiceAccount asserts the user" covers portal to core. It
-does not cover portal to web-ui or admin to core, which is how every admin
-operation and every web-ui request reaches core today: the intermediary
-verifies the portal identity header, then calls core under its own source
-authentication and forwards the user assertion beside it[^delegation]. The
-user assertion and the immediate caller's identity are two pieces of evidence
-and core checks both. Deleting the assertion without a replacement leaves
-three options: reject forwarded operations, trust web-ui and admin to assert
-any user, or forward the portal's own bearer. The second grants two more
-services impersonation authority, and the third contradicts per-surface
-identity and binds no user claims to the token. So neither.
+it.** "The calling ServiceAccount asserts the user" covers the ingress to core.
+It does not cover an intermediary surface to core, which is how a browser-borne
+operation reaches core: the intermediary verifies the identity header, then
+calls core under its own source authentication and forwards the user assertion
+beside it[^delegation]. The user assertion and the immediate caller's identity
+are two pieces of evidence and core checks both.
+Deleting the assertion without a replacement leaves three options: reject
+forwarded operations, trust every intermediary to assert any user, or forward
+the ingress's own bearer. The second grants each intermediary impersonation
+authority, and the third contradicts per-workload identity and binds no user
+claims to the token. So neither.
 
-The replacement is a **user capability minted by core**. The portal, having
-authenticated a user, calls core under its ServiceAccount token and receives a
-short-lived capability that binds the user, the organization, the human
-impersonator when an admin is acting as someone else (today's `imp`
-claim[^impclaim], which stays a human and never names a service), the set of
-ServiceAccounts allowed to present it (its audience: web-ui and admin), an
-expiry, and a `jti`. It carries no operation scope. The portal proxies
+The replacement is a **user capability minted by core**. The ingress workload,
+having authenticated a user, calls core under its ServiceAccount token and
+receives a short-lived capability that binds the user, the organization, the
+human impersonator when an admin is acting as someone else (today's `imp`
+claim, which stays a human and never names a service), the set of
+ServiceAccounts allowed to present it (its audience: the intermediaries), an
+expiry, and a `jti`. It carries no operation scope. The ingress proxies
 requests without parsing them, so it cannot know what an intermediary will
 ask for, and core authorizes each operation against the user exactly as it
-does today for the portal identity. The capability answers _who_ and _through
+does today for the identity header. The capability answers _who_ and _through
 which surfaces_, not _what_, so there is no scope for an intermediary to
 broaden. Core signs it under a key only core holds, the same shape as the
 scoped agent capabilities it already mints[^capability] but under a key the
@@ -557,57 +473,35 @@ capability and skips the user-actor path[^capgate]. Intermediaries forward
 the capability unchanged with their own ServiceAccount bearer, and core
 verifies three things: the capability's signature and expiry, that the
 presenting ServiceAccount is in its audience, and the presenter's own
-identity through `TokenReview`. Web-ui and admin never hold a portal token
+identity through `TokenReview`. An intermediary never holds an ingress token
 and cannot mint a capability. The acceptance tests are the things an
 intermediary must not be able to do: change the user or the impersonator,
 present a capability whose audience names another surface, or act as the
-portal, alongside the one thing it must: complete a legitimate forwarded
+ingress, alongside the one thing it must: complete a legitimate forwarded
 operation.
 
-**`AUTH_CLIENT_SECRET` stops being a deployed secret.** In the embedded topology
-both halves of the loopback run in the portal pod, so the portal mints it at
-process start and hands it to the broker in memory; the 32-character validator
-is satisfied by 32 random bytes[^authclientlen], and the `OIDC_CLIENT_SECRET`
-alias the chart renders for it[^helmalias] goes with it. In the split topology
-the token endpoint accepts the portal's SA token as an RFC 7523 client
-assertion, verified the same way as any other B1 call.
+Freshness and single-use are separate from authentication and stay that way.
+`TokenReview` authenticates the workload token; it does not consume a
+privileged operation and it does not remember that one already ran. The same
+ServiceAccount token serves any number of distinct operations, and an operation
+that must not be replayed keeps its own purpose binding, short expiry, and
+`jti` claimed in a durable replay store, independent of how the caller
+authenticated.
 
 ### Phase B2: the database
 
-`random_password.database` produces a 32-character password that Terraform
-writes into state and into the `DATABASE_URL` secret[^dbpw]. Nothing in the
-repository rotates it and no rotation procedure is documented.
+The database password is whatever a human typed into `DATABASE_URL`. Nothing in
+the repository rotates it and no rotation procedure is documented.
 
-Both RDS and CloudNativePG are requirements, so this phase carries both designs
-at full depth. They share two mechanics and differ in everything else.
+CloudNativePG is the in-cluster database this plan is for; the managed-RDS
+design went with the AWS deployment path and is no longer carried here.
 
-**Shared.** `pg` 8.13 accepts `password` as a function returning a
-promise[^pgversion], so the per-connection callback is a config change in
-`retainPool`, not a driver change. And `pooledDatabaseUrl` hard-rejects a pooled
-URL whose username, password, or database differ from the direct
-one[^poolinvariant]; a callback-authenticated URL carries no password to
-compare, so that check changes under both designs.
-
-**RDS.** The previous revision mixed two authentication modes on one role:
-direct IAM with `rds_iam` granted to the application role, and RDS Proxy
-holding a password for that same username. Once `rds_iam` is granted the role
-authenticates only with IAM tokens — AWS states one authentication method per
-PostgreSQL user, with IAM taking precedence[^rdsiamexcl] — so the proxy's
-password login for it stops working. The clean topology is end-to-end IAM,
-which RDS Proxy supports as of September 2025: `DefaultAuthScheme=IAM_AUTH`
-makes the proxy use IAM both for client connections and for its own
-connection to the database, with no Secrets Manager entry for the application
-role[^rdsproxye2e]. So: the proxy's role holds `rds-db:connect` for the
-application role; core authenticates to the proxy with an IAM token from its
-ServiceAccount via IRSA or Pod Identity; `rds_iam` is granted to the
-application role; and no password exists for that role anywhere. The master
-password remains, relocated by `manage_master_user_password` into an
-auto-rotating secret, and the `GRANT rds_iam` bootstrap needs a
-password-authenticated session as the master user, so the migration creates
-the application role first. The migration cannot keep a password fallback on a
-role switched to IAM; if a fallback is wanted during cutover it is a second,
-separately named role, never a second credential on the same one.
-`sslmode=no-verify` is a separate fix through `DATABASE_CA_CERT`.
+**Mechanics this phase rests on.** `pg` 8.13 accepts `password` as a function
+returning a promise[^pgversion], so the per-connection callback is a config
+change in `retainPool`, not a driver change. And `pooledDatabaseUrl`
+hard-rejects a pooled URL whose username, password, or database differ from the
+direct one[^poolinvariant]; a callback-authenticated URL carries no password to
+compare, so that check changes.
 
 **CloudNativePG.** No IAM auth exists in-cluster, and A2 does not help: the
 password is not a verifier key. The previous revision claimed the operator
@@ -653,56 +547,27 @@ off the same-credential invariant.
 
 ### Phase B3: npm trusted publishing
 
-`publish-cli.yml` already passes `--provenance`, which uses the job's OIDC
-identity to attest the build. It still authenticates with a static
-`NODE_AUTH_TOKEN`. npm's trusted publishing accepts an OIDC identity for
-_authentication_, which drops the token.
-
-Reusable workflows are supported and nothing needs inlining. npm validates the
-calling workflow's filename — the `workflow_ref` claim — not the file that runs
-`npm publish`, so the trusted publisher names `release.yml` and
-`publish-cli.yml` stays a `workflow_call`. Three things follow for this
-repository:
-
-- **Two entry points.** `publish-cli.yml` also carries its own
-  `workflow_dispatch` trigger[^publishdispatch], which npm sees as a different
-  caller. A package can hold several trusted-publisher configurations, so add
-  one per entry point, or drop that trigger.
-- **The credential is publish-only.** The Publish step ends with an
-  `npm deprecate` for the 0.1.5 mispublish[^npmdeprecate]; that call fails
-  without a token. It is historical and should go. `npm view` and `npm pack` on
-  a public package need no auth.
-- **Mechanics.** Remove `NODE_AUTH_TOKEN` and the `NPM_TOKEN` secret;
-  `id-token: write` is already set[^idtoken]. `registry-url` can stay: an unset
-  variable in the `.npmrc` that setup-node writes does not break npm 10 or 11.
-  Trusted publishing needs npm 11.5.1 or later. `cli/package.json` pins
-  `node >=24.0.0` and no npm version[^engines], and `.node-version` is
-  24.18.0, so confirm the npm bundled with that Node clears the floor
-  before relying on it. `--provenance` becomes automatic and is harmless to
-  keep.
-
-For the fork this is upstream-only, since only the `yc-software` organization
-can configure the publisher for `@yc-software/qm`. It belongs in the ADR's
-split-off list.
+Removed. The published CLI package and its release workflow went with the
+proprietary deployment paths, so there is no `NPM_TOKEN` and no `npm publish`
+left in this repository.
 
 ### Phase B4: a Kubernetes sandbox backend and deploy provider
 
-`PORTER_DEPLOY_API_TOKEN` is the largest static credential in the table on this
-path: an Admin-role token that can do anything in the Porter project, handed to the
-core pod alone since the per-workload split. It has two consumers in core, not one: `porterSandboxEnv`
-reads it for the sandbox backend and `porterDeployEnv` reads it again for
-`DEPLOY_PROVIDER=porter`, which publishes apps[^porterboth]. A plan that
-replaces only the sandbox half leaves the Admin token in place for publishing.
+The sandbox vendor keys — `E2B_API_KEY`, `MODAL_TOKEN_ID` and
+`MODAL_TOKEN_SECRET`, `SMOLMACHINES_TOKEN`, `AGENT37_API_KEY` — are the largest
+group of dashboard-minted credentials left in the table, and the `local` Docker
+backend is the only alternative that needs none. Deploying apps has the same
+shape: `docker` is the only provider under `src/deploy/`[^deployproviders].
 
-When qm runs on the same cluster its sandboxes run on, both halves can talk to
-the Kubernetes API with core's own ServiceAccount, RBAC-scoped to a sandbox
-namespace, instead of Porter's admin API. That is workload identity through the
-auto-mounted SA token, with no secret at all. It is a new `kubernetes` sandbox
-backend next to the five that exist and a new `kubernetes` deploy provider next
-to the four under `src/deploy/`[^deployproviders], so it is real work — but it
-is the only route that removes the token rather than storing it somewhere
-nicer. Until both land, the token should at minimum be scoped to core's
-`ExternalSecret` alone.
+When qm runs on the same cluster its sandboxes and its published apps run on,
+both can talk to the Kubernetes API with core's own ServiceAccount, RBAC-scoped
+to a sandbox namespace, instead of a vendor's admin API. That is workload
+identity through the auto-mounted SA token, with no secret at all. It is a new
+`kubernetes` sandbox backend next to the ones that exist and a new `kubernetes`
+deploy provider next to `docker`, so it is real work — but it is the only route
+that removes the vendor keys rather than storing them somewhere nicer. Until it
+lands, each vendor key should at minimum be scoped to core's `ExternalSecret`
+alone.
 
 ### Phase B5: federate the model keys
 
@@ -804,33 +669,29 @@ identity.
 
 Getting the provider onto the nodes is one file and one binary, and no
 self-managed node pool is needed. The gate is on by default from 1.34, so the
-prerequisite is the Porter cluster on EKS 1.34 or later. The API-server side is
+prerequisite is a cluster on Kubernetes 1.34 or later. The API-server side is
 RBAC only: with `ServiceAccountNodeAudienceRestriction`, on by default since
 1.32, the kubelet's TokenRequest for the registry audience passes an
 authorization check with verb `request-serviceaccounts-token-audience`,
 resource `<audience>`, and `resourceNames` the pulling ServiceAccounts, bound
-to `system:nodes` — no control-plane flags, so the managed control plane is
-fine. EKS nodes already start the kubelet with
-`--image-credential-provider-config /etc/eks/image-credential-provider/config.json`
-for `ecr-credential-provider`, and AWS documents appending further providers to
-that file. On a node, B6 is therefore: drop the Zot plugin binary beside it,
-append a provider with `matchImages` for the Zot host and `tokenAttributes`
+to `system:nodes` — no control-plane flags, so a managed control plane is
+fine. Managed node images already start the kubelet with an
+`--image-credential-provider-config` file for the cloud registry's provider,
+and appending further providers to that file is documented. On a node, B6 is
+therefore: drop the Zot plugin binary beside it, append a provider with
+`matchImages` for the Zot host and `tokenAttributes`
 (`serviceAccountTokenAudience`, `requireServiceAccount: true`, `cacheType`),
 and restart the kubelet.
 
-Two ways to reach Porter-managed nodes. A **DaemonSet installer** — privileged,
+Two ways to reach managed nodes. A **DaemonSet installer** — privileged,
 `hostPath` on that directory, `nsenter` into the host to restart the kubelet —
-works on Porter's node groups unchanged and self-heals on node replacement, at
+works on a managed node group unchanged and self-heals on node replacement, at
 the cost of one kubelet restart per node and a bootstrap rule that the
-installer image must be pullable without the provider, so from ECR or public
-ghcr. An operator-owned EKS managed node group with a custom launch template
-and `nodeadm` user data is cleaner (`nodeadm` has no credential-provider field,
-so the provider file is a shell part) but sits outside Porter, which will not
-upgrade or resize it. The DaemonSet is the default; the node group only if
-kubelet restarts are unacceptable. Porter's Node Groups settings cover machine
-types, counts, disk, autoscaling, and GPU groups and nothing about launch
-templates or kubelet flags, so nothing there conflicts — confirm in the
-dashboard.
+installer image must be pullable without the provider, so from a public
+registry. An operator-owned node group with a custom launch template and its
+own bootstrap user data is cleaner but sits outside whatever manages the rest
+of the pool, which will not upgrade or resize it. The DaemonSet is the default;
+the node group only if kubelet restarts are unacceptable.
 
 **The plugin is a deliverable.** Zot's OIDC login takes the identity token as
 the password of a basic-auth pair with any username and completes the OCI token
@@ -845,33 +706,20 @@ below 1.34. On that fallback, the ESO `ECRAuthorizationToken`,
 mirrored off ghcr into the cloud registry; for ghcr itself the option is the
 `GithubAccessToken` generator, which still holds a GitHub App private key.
 
-### Phase C: the keys core and auth sign with
+### Phase C: the keys core signs with
 
 The keys this phase covers are the single-value set from the rotation trap,
-less the three B1 deletes (`CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`,
-`AUTH_CLIENT_SECRET`), plus `AUTH_SIGNING_JWK`, which is asymmetric and so not
-in that set but rotates under the same two-`kid` rule: eight keys that core or
-auth uses to sign, seal, or encrypt, where nothing outside the deployment ever
-needs the key itself. After A2 they can be rotated safely; this phase is about
-where they live.
+less the three B1 deletes: `SKILL_SIGNING_SECRET`,
+`DEPLOY_APPS_SESSION_SECRET`, and `CONNECTOR_SECRET_KEY`, three keys core uses
+to sign, seal, or encrypt, where nothing outside the deployment ever needs the
+key itself. After A2 they can be rotated safely; this phase is about where they
+live.
 
-On **ECS** the key moves into KMS and the task role calls it: `CONNECTOR_SECRET_KEY`
-as envelope encryption with a KMS key encryption key, `AUTH_SIGNING_JWK` as a
-KMS asymmetric key behind the existing JWKS endpoint, and the HMACs as
-`GenerateMac` / `VerifyMac`.
-
-On **Kubernetes** they are carried by ESO from the cloud secret manager, one
-`ExternalSecret` per service so each pod holds only its own, with a
-`refreshInterval` and the multi-key overlap from A2 making the refresh safe.
-Whether they are also KMS-backed is a per-cloud choice — on EKS the seam can
-read them through `SECRETS_BACKEND=aws` under IRSA and skip ESO for core's own
-keys entirely.
-
-For the Fly tokens, which are Tier 2 because the CLI itself sets the one-year
-expiry, the fix is minting per-deploy with a short `-x`. The `AwsRoleBroker`
-already in the tree is the right shape for any vendor that supports scoped
-minting: it caches per-actor credentials, refreshes on a margin, and constrains
-the session with an inline policy[^broker].
+They are carried by ESO from the cloud secret manager, one `ExternalSecret` per
+service so each pod holds only its own, with a `refreshInterval` and the
+multi-key overlap from A2 making the refresh safe. Whether the cloud secret
+manager also holds them under a KMS key is a per-cloud choice and invisible to
+core, which reads the mounted file through the seam either way.
 
 ### Phase D: contain what remains
 
@@ -882,32 +730,33 @@ path — even one that needs code in qm — is Tier 2, with the root credential
 living only in the rotation Job and ESO carrying the child.
 
 **OAuth client secrets: ESO-carried, human-rotated at the IdP.** This group is
-the connector client secrets — Google, Dropbox, Linear, and the four the CLI never declares (`SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`) — and the
-portal's `OIDC_CLIENT_SECRET` when an external identity provider is in use,
-and `PORTAL_TRUSTED_OIDC_CLIENT_SECRET` for the trusted-entry PoC, which is the
-same kind of credential for a second provider and already does PKCE S256 on its
-authorization-code flow. The
+the connector client secrets — Google, Dropbox, and Linear, plus the four no
+list declares (`SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`,
+`GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`). The
 previous revision put these under "can never meet the rotation bar," which
 conflated two things. Rotation cannot be _automated_, because each IdP mints
 the secret in a dashboard with no API to mint another. But the secret can be _carried_ by ESO, and for some providers it can be
 removed outright. Whether a human rotation propagates without a restart
 depends on the reader: core resolves connector client secrets per use through
-`SecretSource`, so those propagate with no code change; the portal copies
-`OIDC_CLIENT_SECRET` into a module-level configuration at load and builds the
-trusted-entry configuration from `process.env` at initialization[^portalcapture],
-so both portal paths are restart-required until A1 extends the credential
-seam into the portal through the chassis. The acceptance criterion for that
-extension is: rotate either client secret, disable the old value at the test
-IdP, and complete a new login without restarting the portal. Its own
+`SecretSource`, so those propagate with no code change. Its own
 subsection follows.
 
 **Rotatable, so Tier 2.** Two vendors are verified rotatable through an
 admin API: OpenRouter, through its management keys endpoint, and Resend,
 through its create-API-key endpoint. OpenAI is federated in B5 and no longer
 belongs here. An ESO `Webhook` generator or a scheduled Job closes the loop
-on the carrier side; the consumer side is the SES bullet below, since the Resend key is captured
-at construction the same way, by two consumers rather than one: the auth
-broker and core's invitation mailer. Two more join them with a mechanism rather than an API:
+on the carrier side; the consumer side needs code, because core's invitation
+mailer captures the Resend bearer at construction and is built once at
+boot[^coremailer], so the rotation Job can mint and verify a replacement while
+the running process keeps sending with the old one, and retiring the old key
+then breaks invitation mail. So that mailer is a consumer A1 must reach:
+resolve the credential at send time through the seam, or replace the mailer
+atomically when its credential generation changes, and keep the old credential
+valid until every consumer reports the new generation. Until then it is
+restart-required, and this document says so rather than claiming restart-free
+rotation. Acceptance test: rotate the Resend key, confirm the running mailer
+adopted the new generation, revoke the old key, and send an invitation email
+without a restart. One more joins them with a mechanism rather than an API:
 
 - **`SLACK_BOT_TOKEN`.** Slack's token rotation is an opt-in, per-app, one-way
   setting: bot and user tokens get a 12-hour lifetime with a refresh token, an
@@ -917,54 +766,24 @@ broker and core's invitation mailer. Two more join them with a mechanism rather 
   today[^slackrefresh], so this is a code change — a refresh token and expiry
   beside `botTokenEnc` in the installation store, a refresh loop, and the
   one-time exchange. After that the bot token meets the bar.
-- **`SMTP_PASSWORD` on SES.** The SES SMTP credential is derived from an IAM
-  access key: the user name _is_ the access key ID and the password is
-  derived from its secret[^sessmtp]. So rotation is: create a new access key,
-  derive, store the pair in Secrets Manager, verify, delete the old key. AWS
-  publishes a Lambda-based Secrets Manager rotation for exactly this, and ESO
-  syncs the result. Two things in qm change, and the first draft of this
-  bullet said nothing did. First, the user name rotates with the password, so
-  `SMTP_USERNAME` and `SMTP_PASSWORD` are one versioned credential record,
-  never two independently refreshed fields; a new user name paired with an
-  old password is an invalid login and the acceptance test rejects it.
-  Second, the consumers do not re-read either. The auth broker builds its
-  configuration once from `process.env` at load and constructs its mailer
-  from it once; the Resend mailer captures its bearer header and the SMTP
-  mailer copies its options at construction, so a rotated value never reaches
-  a running mailer[^mailers], and core's invitation mailer is built the same
-  way at boot[^coremailer]. The rotation Job can mint and verify a
-  replacement while every running process keeps sending with the old one,
-  and retiring the old key then breaks sign-in mail. So the auth and core
-  mailers are consumers A1 must reach: resolve the credential record at
-  send or connection time through the seam, or replace the mailer atomically
-  when its credential generation changes, and keep the old credential valid
-  until every consumer reports the new generation. Until then both
-  transports are restart-required, and this document says so rather than
-  claiming restart-free rotation. Acceptance test: start the broker, rotate
-  the SES pair, confirm the running mailer adopted the new generation,
-  disable the old access key, and send a sign-in email without a restart;
-  attempt a login with the new user name and the old password and confirm
-  the record is rejected as mixed; repeat for Resend by revoking the old API
-  key, and there send both a sign-in email from the broker and an invitation
-  email from core, since core is Resend's second consumer.
 
-**Can never meet the rotation bar.** `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`,
-and `SMTP_PASSWORD` on any relay other than SES. Each is minted in a vendor
+**Can never meet the rotation bar.** `SLACK_APP_TOKEN` and
+`SLACK_SIGNING_SECRET`. Each is minted in a vendor
 dashboard with no API to rotate it and no client-side mechanism that removes
-it. For these the `qm doctor` age report is the ceiling. `SLACK_SIGNING_SECRET`
+it. `SLACK_SIGNING_SECRET`
 has no stored path and is read only from environment, so giving it one is a
 small piece of real work; the Slack app token already lives in the durable
 store encrypted at rest[^slackstore]. `MODEL_GATEWAY_API_KEY` and
 `SECURITY_SCREEN_PROXY_TOKEN` sit here until the gateway and screen vendors are
 checked, and the sandbox vendor keys are moot on this path once B4 lands, since
-Porter is the backend they would replace. On Kubernetes, anything a pod needs
+the cluster is the backend they would replace. Anything a pod needs
 at boot is an `ExternalSecret` per service, not a hand-maintained `secretEnv`
 map.
 
 For all of it: declare `MODEL_GATEWAY_API_KEY`, `DEPLOY_APPS_SESSION_SECRET`,
-`SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`,
-`GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET`, and
-`PORTAL_TRUSTED_OIDC_CLIENT_SECRET` in the CLI spec list. A
+`SECURITY_SCREEN_PROXY_TOKEN`, `SLACK_OAUTH_CLIENT_SECRET`,
+`NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, and
+`X_OAUTH_CLIENT_SECRET` in the spec list A1 builds. A
 secret core requires but the deployment tooling has never heard of cannot be
 validated, routed, or rotated.
 
@@ -972,26 +791,23 @@ validated, routed, or rotated.
 
 Core resolves a connector's client credentials in two steps: the durable
 connector store first, then `SecretSource`[^clientresolver]. The store is the
-admin-UI path — per-org, encrypted with `CONNECTOR_SECRET_KEY`. The fallback is
+admin-API path — per-org, encrypted with `CONNECTOR_SECRET_KEY`. The fallback is
 the one place `SecretSource` is wired today, which means the ESO path already
-exists: on EKS, `SECRETS_BACKEND=aws` under IRSA reads the client secret from
-Secrets Manager with no ESO at all; on GKE, AKS, or on-prem, an
-`ExternalSecret` syncs it from the cloud secret manager into core's own
-`Secret`, mounted as a file, and the Phase A seam reads it there. Either way a human still mints the secret in the IdP's dashboard and writes
+exists: an `ExternalSecret` syncs the client secret from the cloud secret
+manager into core's own `Secret`, mounted as a file, and the Phase A seam reads
+it there. A human still mints the secret in the IdP's dashboard and writes
 it to the secret manager; from that point on, propagation to core's connector
-resolver is automatic and restart-free. The portal's two client secrets take
-the same carrier and, until A1 reaches the portal, a restart.
+resolver is automatic and restart-free.
 
 Three things follow.
 
 **The store must not shadow ESO.** A durable-store record wins over the ESO
-value, so an operator who enters a client secret in the admin UI silently
+value, so an operator who writes a client secret through the admin API silently
 disables the managed path for that provider. When ESO manages a provider, the
-store must hold no record for it. Add a `qm doctor` finding and an admin
-Connectors-tab warning when both are present; the cleaner fix is a
-deployment-level switch that makes the store path read-only for client
-credentials, so the UI shows the ESO-managed client id and never accepts a
-secret.
+store must hold no record for it. Have the admin API warn when both are present;
+the cleaner fix is a deployment-level switch that makes the store path read-only
+for client credentials, so the admin API reports the ESO-managed client id and
+never accepts a secret.
 
 **Rotation is safe on the qm side and conditional on the IdP side.** These
 secrets are not in the single-value set: core presents the secret to the IdP
@@ -1018,30 +834,14 @@ enough for the trade.
 
 Two further mechanisms, for completeness. `private_key_jwt` (RFC 7523 §2.2) is
 the confidential-client method that replaces a shared secret with a signed
-assertion, and the Phase C KMS key would sign it; none of the seven connector
-IdPs support it, but the portal's external identity provider might, since
-Entra, Okta, and Auth0 do. And for a Google Workspace organization, a service
-account with domain-wide delegation bound through GKE Workload Identity acts as
-any user with no secret anywhere — but it replaces user consent with
-admin-granted impersonation, which contradicts the security model in
-`SECURITY.md` where the agent acts as the person with their credentials. It is
-listed so nobody rediscovers it as a shortcut; it is not recommended.
-
-### What about Bedrock and SES?
-
-Bedrock is superseded for the model key. Federation removes `ANTHROPIC_API_KEY`
-on EKS, GKE, AKS, and on-prem alike with no Bedrock provider, and
-`MODEL_PROVIDERS` has no Bedrock entry to begin with[^providers]. It is no
-longer the route to a keyless model call.
-
-SES is Tier 2, as Phase D says. The existing route is the SMTP interface,
-which the CLI tells operators to configure with "the SMTP credential, not an AWS
-access key"[^ses]; that credential is derived from an IAM access key, user name and password
-together, and rotates through the published Lambda rotation, which is what puts `SMTP_PASSWORD` at Tier 2 on SES and Tier 3 on any other
-relay; the auth mailer capturing the pair at construction is a restart caveat
-on that rotation, not a change of tier. An
-IAM-authenticated SES transport would remove it entirely; that is a new
-transport implementation and a deliberate deferral.
+assertion; none of the seven connector IdPs support it, but an external
+identity provider at the ingress might, since Entra, Okta, and Auth0 do. And
+for a Google Workspace organization, a service account with domain-wide
+delegation bound through GKE Workload Identity acts as any user with no secret
+anywhere — but it replaces user consent with admin-granted impersonation, which
+contradicts the security model in `SECURITY.md` where the agent acts as the
+person with their credentials. It is listed so nobody rediscovers it as a
+shortcut; it is not recommended.
 
 ## Rollout
 
@@ -1054,51 +854,46 @@ gantt
   axisFormat %b
   section Phase A
   Design doc (this PR)          :done, d1, 2026-09-14, 7d
-  A1 reconcile the spec lists and build the seam :a1, after d1, 35d
+  A1 one spec list and the credential seam :a1, after d1, 35d
   A2 multi-key verification     :a2, after d1, 21d
   section Phase B
   B0 per-service ServiceAccounts :b0, after d1, 7d
   B1 projected SA tokens core to surfaces :b1, after b0, 30d
-  B2 database credential on RDS and CloudNativePG :b2, after d1, 30d
-  B3 npm trusted publishing     :b3, after d1, 14d
+  B2 database credential on CloudNativePG :b2, after d1, 30d
   B4 Kubernetes sandbox backend and deploy provider :b4, after b1, 45d
   B5 Anthropic WIF for the model key :b5, after a1, 14d
   B6 image pulls via the kubelet credential provider :b6, after d1, 14d
   section Phase C
   C1 ESO per service with refresh :c1, after a2, 21d
-  C2 KMS-held keys on ECS       :c2, after c1, 30d
   section Phase D
-  D1 containment and age reporting :e1, after c1, 21d
+  D1 containment                 :e1, after c1, 21d
 ```
 
 The Helm Secret split is its own plan and precedes this one; Phase B1 is
 pointless until it has landed, and nothing here reschedules it. A2 starts from the design doc in parallel with everything: it depends on
 nothing and, per the risk table, gates every ESO `refreshInterval`. B5 depends
-only on the seam. B3 and B6 are independent of the rest and carry their own
-caveats.
+only on the seam. B6 is independent of the rest and carries its own caveats.
 
 Every phase that removes a secret ships with a dual-read window: the federated
 path is attempted and the static value is accepted as a fallback. Removing the
-fallback needs the instrumentation from A1, because no existing command reports
-whether a value was read.
+fallback needs the instrumentation from A1, because nothing reports whether a
+value was read.
 
 ## Alternatives considered
 
 **Leave it alone; rotate more often.** Rotation does not fix the symmetric-key
-impersonation problem, and without A2 rotation of the ten shared keys is an
+impersonation problem, and without A2 rotation of the shared keys is an
 outage. The failure mode is that rotation quietly never happens, which is the
 current state.
 
-**HashiCorp Vault as the carrier instead of ESO.** It would work, and its
-`aws-iam` auth method is the source of the SigV4 alternative in Phase B1. On
+**HashiCorp Vault as the carrier instead of ESO.** It would work. On
 Kubernetes it is a second control plane where ESO is a controller that reads
 from the cloud secret manager the cluster already has an identity for. Vault
 remains a reasonable operator choice behind the `CredentialSource` seam.
 
 **KMS signing as the primary service-to-service mechanism.** The first draft
-proposed it. It is the right ECS answer and the wrong Kubernetes one: it
-introduces a KMS call per token and a key per surface to do what a projected
-ServiceAccount token does with neither.
+proposed it. It introduces a cloud KMS call per token and a key per surface to
+do what a projected ServiceAccount token does with neither.
 
 **SPIFFE/SPIRE for workload identity.** The right answer for a large
 multi-cluster fleet, and heavy for a handful of services on one cluster that
@@ -1113,19 +908,20 @@ projected token is simpler and the cluster already runs the issuer.
 
 | Risk                                                                           | Mitigation                                                                                                                                                                                                                                                                                |
 | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The split's hand-maintained routing lists drift from the spec list             | A1 renders them from the spec; until then the split accepts that drift, and its render check pins the lists only against the chart's own table                                                                                                                                            |
-| Phase A lands and the later phases do not, leaving refactor without benefit    | The Secret split already landed on its own; schedule `NPM_TOKEN` and the database credential the same way so value lands either way                                                                                                                                                       |
+| The split's hand-maintained routing lists drift from what the code reads       | A1 renders them from the spec; until then the split accepts that drift, and its render check pins the lists against a scan of the code                                                                                                                                                    |
+| Phase A lands and the later phases do not, leaving refactor without benefit    | The Secret split already landed on its own; schedule the database credential the same way so value lands either way                                                                                                                                                                       |
 | An ESO refresh rotates a shared key and takes the fleet down                   | A2 lands before any `refreshInterval` is set on a single-value key, and its activate step waits for every verifier to report the new generation                                                                                                                                           |
 | A producer refreshes to the new key before a verifier holds it                 | Prepare precedes activate in A2; current-plus-previous alone does not cover this ordering and is not the design                                                                                                                                                                           |
 | Bearer tokens transit the chart's plain-HTTP service URLs                      | B1 refuses bearer mode unless TLS or an enforced encrypted network is configured; the chart wires TLS to core when bearer mode is on                                                                                                                                                      |
+| Nothing mints `x-portal-identity` now that the portal is gone                  | B1 owns the seam: an identity source at the ingress authenticates the user and core mints the user capability from its ServiceAccount call; until then the header's verifiers have no producer and the doc says so                                                                        |
 | The database password changes on the server before core's mounted file updates | Alternating login roles in B2; the active role switches only after fresh direct and pooled logins succeed with the prepared credential, the previous role is rotated again only after every consumer acknowledges the new generation, and no role's password changes while a pool uses it |
-| A rotated value is invisible to a running pod                                  | Core reads through the seam from a file-mounted Secret the kubelet updates in place, or under `SECRETS_BACKEND=aws` with a cache TTL; a reloader is the fallback only for values that must stay in `envFrom`                                                                              |
+| A rotated value is invisible to a running pod                                  | Core reads through the seam from a file-mounted Secret the kubelet updates in place; a reloader is the fallback only for values that must stay in `envFrom`                                                                                                                               |
 | `TokenReview` becomes a hard dependency on core's request path                 | A revocation-latency budget bounds the cache; serve from cache only within it when the API server is unreachable, fail closed past it, and never turn an explicit rejection into success through offline JWKS verification                                                                |
-| The pooled-path invariant blocks partial migration                             | `pooledDatabaseUrl` changes in B2 under both designs; RDS Proxy on RDS and the CloudNativePG `Pooler` in-cluster each make the pooled path token- or operator-authenticated                                                                                                               |
-| The Porter token stays because B4 is large                                     | The per-workload split already keeps it out of every pod but core; B4 covers both the sandbox and the publishing consumer                                                                                                                                                                 |
-| Targets without a workload issuer diverge from Kubernetes                      | Keep the HMAC and KMS paths as explicit `federation` variants, exercised by the same tests                                                                                                                                                                                                |
+| The pooled-path invariant blocks partial migration                             | `pooledDatabaseUrl` changes in B2 under both designs; the CloudNativePG `Pooler` makes the pooled path operator-authenticated                                                                                                                                                             |
+| The sandbox vendor keys stay because B4 is large                               | The per-workload split already keeps them out of every pod but core; B4 covers the sandbox and the app-publishing consumer together                                                                                                                                                       |
+| Targets without a workload issuer diverge from Kubernetes                      | Keep the HMAC path as an explicit `federation` variant, exercised by the same tests                                                                                                                                                                                                       |
 | The work stalls halfway and the system carries both mechanisms forever         | Each phase deletes its secret from the spec list as its last step; a half-finished phase is visible in that list                                                                                                                                                                          |
-| A rolling upgrade kills an in-flight turn                                      | Core has ECS task protection and no Kubernetes equivalent[^ecstaskprot]; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                                                                                                |
+| A rolling upgrade kills an in-flight turn                                      | Core has no disruption protection on Kubernetes; add a PodDisruptionBudget and size `terminationGracePeriodSeconds` to a turn before B1 rolls pods                                                                                                                                        |
 | An exchanged Anthropic bearer is refreshed from an unrotated projected file    | B5 mints a fresh token per exchange through the TokenRequest API; never re-read the projected file for a refresh                                                                                                                                                                          |
 
 ## Decisions taken
@@ -1133,143 +929,101 @@ projected token is simpler and the cluster already runs the issuer.
 These were open questions in the previous revision and are now settled with the
 author. Each is folded into the phase it affects; this list is the record.
 
-1. **Which database.** Both. RDS and CloudNativePG are requirements, and B2
-   carries both designs at full depth.
-2. **Fly workload identity.** Verifiable per app. Fly Machines mint OIDC tokens
-   with public discovery, and B1 extends to Fly through the JWKS verifier. The
-   same tokens federate to Anthropic. Upstream-only for this layer.
-3. **`AUTH_CLIENT_SECRET`.** Not a deployed secret. Minted in-process in the
-   embedded topology; an RFC 7523 client assertion in the split one. Folded
-   into B1.
-4. **Vendor rotation APIs.** Anthropic is deleted by federation, not rotated.
+1. **Which database.** CloudNativePG, in-cluster. The managed-RDS design went
+   with the AWS deployment path, and B2 carries the CloudNativePG design at
+   full depth.
+2. **Vendor rotation APIs.** Anthropic is deleted by federation, not rotated.
    OpenAI, OpenRouter, and Resend are verified rotatable through admin APIs.
-   The sandbox vendor keys are moot once B4 lands. The auth and core mailers
-   capture their credential at construction and are consumers A1 must reach
-   before Resend or SES rotation is restart-free. Folded into Phase D.
-5. **Local development.** Degrades to the environment source. The seam selects
+   The sandbox vendor keys are moot once B4 lands. Core's invitation mailer
+   captures its credential at construction and is a consumer A1 must reach
+   before Resend rotation is restart-free. Folded into Phase D.
+3. **Local development.** Degrades to the environment source. The seam selects
    federation on the presence of the projected token file and falls back to
    HMAC and the static key otherwise. Folded into A1.
-6. **Existing deployments.** Every step is additive with a dual-accept window
-   if ordered: the Secret split first on its own, then A2 and per-service ServiceAccounts in parallel, then B1 with HMAC still accepted, then the database with the password path kept until IAM or
-   CloudNativePG is proven. The one gap is in-flight turns during a roll, which
-   the risk table covers.
-7. **Connector OAuth client secrets.** ESO-managed. Carried from the cloud
+4. **Existing deployments.** Every step is additive with a dual-accept window
+   if ordered: the Secret split first on its own, then A2 and per-service
+   ServiceAccounts in parallel, then B1 with HMAC still accepted, then the
+   database with the password path kept until CloudNativePG is proven. The one
+   gap is in-flight turns during a roll, which the risk table covers.
+5. **Connector OAuth client secrets.** ESO-managed. Carried from the cloud
    secret manager into core's own `Secret` and read through the seam; the
    durable-store path yields to ESO and must not hold a record for a managed
    provider. Removed outright via PKCE public client where the IdP permits it.
    Folded into Phase D.
-8. **Porter node groups.** No self-managed pool. The gate is on by default
-   from 1.34, the API-server side is RBAC, EKS nodes already run a credential
-   provider, and a DaemonSet installer reaches Porter's node groups unchanged.
-   The Zot plugin is B6's deliverable. Folded into B6.
-9. **npm reusable workflows.** Supported; the trusted publisher names the
-   calling workflow. Two entry points to register or one to drop, the
-   historical `npm deprecate` to remove, and the npm floor to confirm. Folded
-   into B3.
-10. **OpenAI workload identity federation.** Verified from the SDKs and
-    documentation: RFC 8693 exchange of a projected ServiceAccount token for
-    a short-lived access token bound to a Platform service account.
-    `OPENAI_API_KEY` is Tier 1; folded into B5. The Codex `auth.json` mode is
-    the one thing left to test.
-11. **RDS Proxy end-to-end IAM.** Verified from the RDS API model:
-    `DefaultAuthScheme=IAM_AUTH` makes the proxy authenticate to the database
-    with IAM, so the application role carries no password and no Secrets
-    Manager entry. Folded into B2.
+6. **Node groups.** No self-managed pool. The gate is on by default
+   from 1.34, the API-server side is RBAC, managed node images already run a
+   credential provider, and a DaemonSet installer reaches a managed node group
+   unchanged. The Zot plugin is B6's deliverable. Folded into B6.
+7. **OpenAI workload identity federation.** Verified from the SDKs and
+   documentation: RFC 8693 exchange of a projected ServiceAccount token for
+   a short-lived access token bound to a Platform service account.
+   `OPENAI_API_KEY` is Tier 1; folded into B5. The Codex `auth.json` mode is
+   the one thing left to test.
 
 ## Open questions
 
-None at this revision. Every question raised since the first draft is either
+One. **What authenticates the human.** Removing the portal removed the only
+producer of the `x-portal-identity` assertion its three verifiers still expect.
+B1 specifies the seam an identity source at the ingress has to satisfy and the
+capability core mints from there; which workload fills that slot is not settled
+in this revision. Every other question raised since the first draft is either
 folded into a phase or recorded above as a decision.
 
 ## References
 
 [^split]: [`helm-per-service-secrets.md`](./helm-per-service-secrets.md) — one `Secret` per Deployment, routed by `services.<name>.secrets`, with the render check that pins the routing.
 
-[^clibackends]: `cli/src/backends/registry.ts:96`, `:149`, `:230` — the three hosting providers are `docker`, `fly`, and `aws`. No Kubernetes or Porter target exists; `docs/porter.md` notes that `cli/src/services.ts` has no Porter wiring either.
+[^coresecretspecs]: `src/deployment/secret-schema.ts:29` — `CORE_SECRET_SPECS`, the boot-time validation list. Nothing on the deploy side reads it.
 
-[^specs]: `cli/src/secrets.ts:43` — `FIRST_PARTY_SECRET_SPECS`, the typed schema from which `.env.example`, Terraform `secret_names`, and per-task ECS secret routing are derived. Deploy-side only; nothing under `src/` imports it.
+[^gateway]: `src/config.ts`, `modelGatewayEnv` — `${name} is required when model gateway routing is configured`, used as the gateway `apiKey`.
 
-[^gateway]: `src/config.ts:940` — `${name} is required when model gateway routing is configured`, used as `apiKey` at `:957`. Not declared in `cli/src/secrets.ts`.
+[^deployapps]: `src/config.ts`, `deployAppsEnv` — a cookie-signing secret declared by no spec list.
 
-[^deployapps]: `src/config.ts:615` — a cookie-signing secret that falls back to `PORTAL_SESSION_SECRET`. Not declared in `cli/src/secrets.ts`.
-
-[^oidctrust]: `cli/src/backends/aws.ts:2973` — `assertGithubDeployTrust` requires exactly one trust statement, `sts:AssumeRoleWithWebIdentity` only, a pinned `sts.amazonaws.com` audience, and subjects without wildcards. The role itself is `cli/templates/aws/main.tf:311`.
+[^release]: `.github/workflows/release-package.yml` — `docker/login-action` with `github.token`, then `cosign sign --yes` and `cosign verify` against the job's OIDC identity.
 
 [^security]: [`SECURITY.md`](../SECURITY.md) — "Sandbox credentials are plaintext while in use", and the operator assumptions around credential materialization.
-
-[^computed]: `cli/src/secrets.ts:559` — every plugin with `coreAccess !== false` is added to `CORE_SIGNING_SECRET`'s service list.
 
 [^chassis]: `plugins/chassis/src/env.ts:5` reads the value; the signing itself is `plugins/chassis/src/source-auth-sign.ts` and `plugins/chassis/src/core-client.ts`.
 
 [^sourceauth]: `src/auth/source-auth.ts:36` — `verifySignature` checks signature, timestamp freshness, and replay only. No caller identity is carried or checked.
 
-[^portalmint]: `mintPortalIdentity` is called in the portal at `plugins/portal/src/index.ts:250`, `:761`, `:936` and `plugins/portal/src/proxy.ts:120`, `:191`; `verifyPortalIdentity` runs in core at `src/api/server.ts:293` and `src/api/routes/deployments.ts:66`, and in admin at `plugins/admin/src/index.ts:86`.
+[^portalverify]: `verifyPortalIdentity` runs in core at `src/api/server.ts:293` and `src/api/routes/deployments.ts:66`. Nothing mints it under `PORTAL_IDENTITY_SECRET` any more; core mints a published-app viewer identity at `src/api/routes/deployments.ts:513` under a per-deployment key derived from the source-auth secret, which is a different key for a different audience.
 
-[^portalguard]: `src/api/server.ts:536` — under `production`, core throws if `PORTAL_IDENTITY_SECRET` or `CAPABILITY_SECRET` is unset, equals `CORE_SIGNING_SECRET`, or equals the other.
+[^portalguard]: `src/api/server.ts:543` — under `production`, core throws if `PORTAL_IDENTITY_SECRET` or `CAPABILITY_SECRET` is unset, equals `CORE_SIGNING_SECRET`, or equals the other.
 
-[^loadconfig]: `src/config.ts:993` — `loadConfig(env = process.env)` reads every secret once at boot.
+[^loadconfig]: `src/config.ts`, `loadConfig(env = process.env)` — reads every secret once at boot.
 
 [^helmchecksum]: `deploy/helm/templates/deployment.yaml:26` — the annotation hashes the chart's own `secret.yaml` render (per workload after the split), so a change to an ESO-managed Secret does not alter it.
 
-[^flytokens]: `cli/src/secrets.ts:119` (`fly tokens create org -o <fly-org> -x 8760h`) and `cli/src/preflight.ts:96` (`fly tokens create deploy -a <app> -x 8760h`).
-
-[^secretsource]: `src/wiring.ts:1009` builds the source and passes it only to `createConnectorClientResolver`. Other importers are `src/connectors/oauth.ts:457`, `src/connectors/connector-client-store.ts:127`, `src/credentials/connector-token.ts:16`, `src/api/routes/connectors.ts:48`. Core's own secrets are read from `process.env` in `src/config.ts` — `:1222` `DATABASE_URL`, `:1335` `CORE_SIGNING_SECRET`, `:1343` `CONNECTOR_SECRET_KEY`, `:1354` `SKILL_SIGNING_SECRET`.
-
-[^secretsbackend]: `src/config.ts:896` — `SECRETS_BACKEND` accepts `env` or `aws` only.
-
-[^checklive]: `cli/src/cli.ts:137` describes `--live` as "verify running identity, rendered config, and health"; the implementation emits `fly.live-readiness` / `<target>.live-drift` clauses and throws for unsupported targets at `:334`.
+[^secretsource]: `src/wiring.ts` builds the source and passes it only to `createConnectorClientResolver`. Other importers are `src/connectors/oauth.ts:457`, `src/connectors/connector-client-store.ts:127`, `src/credentials/connector-token.ts:16`, `src/api/routes/connectors.ts:48`. Core's own secrets are read from `process.env` in `src/config.ts` — `DATABASE_URL`, `CORE_SIGNING_SECRET`, `CONNECTOR_SECRET_KEY`, and `SKILL_SIGNING_SECRET` in `loadConfig`.
 
 [^helmsa]: `deploy/helm/values.yaml:9` declares one `serviceAccount` block; `deploy/helm/templates/deployment.yaml:35` sets the same `serviceAccountName` on every Deployment.
 
-[^taskroles]: `cli/templates/aws/main.tf:193` is the shared default task role and `:199` is core's; `:224` defines per-service `assume_role_task` roles, and `:26` (`effective_task_role_arns`) is the coalesce that falls back to the shared role. `manage_task_role` defaults to false (`cli/templates/aws/variables.tf:139`) and is set only for a non-core service with `assumeRoleArns` (`cli/src/terraform.ts:180`).
+[^pgversion]: `package.json` — `"pg": "^8.13.1"`; the pool is built in `retainPool` at `src/persistence/pg-pool.ts:38`.
 
-[^dbpw]: `cli/templates/aws/main.tf:580` generates the password; `:617` sets it on the instance; `:778` writes it into the `DATABASE_URL` secret with `sslmode=no-verify`.
-
-[^pgversion]: `package.json:82` — `"pg": "^8.13.1"`; the pool is built at `src/persistence/pg-pool.ts:55`.
-
-[^poolinvariant]: `src/persistence/pg-pool.ts:85` — `DATABASE_POOL_URL must preserve the DATABASE_URL database and credentials`.
-
-[^broker]: `src/auth/aws-role-broker.ts:46` — per-actor `AssumeRole` with an inline session policy, a 5-minute refresh margin, and a cache keyed by session name.
+[^poolinvariant]: `src/persistence/pg-pool.ts:88` — `DATABASE_POOL_URL must preserve the DATABASE_URL database and credentials`.
 
 [^slackstore]: `src/surfaces/slack-installation.ts:2` imports `encryptSecret`/`deriveConnectorKey`; `createSlackInstallationStore` (`:59`) stores `botTokenEnc` and `appTokenEnc`. `SLACK_SIGNING_SECRET` is read only from environment (`src/slack/config.ts:48`).
 
-[^providers]: `cli/src/config.ts:116` — `MODEL_PROVIDERS = ["anthropic", "openai", "openrouter"]`.
+[^deployproviders]: `src/deploy/` holds `docker-deploy-provider.ts` and the shared base; there is no Kubernetes provider.
 
-[^porterboth]: `src/config.ts:519` (`porterDeployEnv`) and `:536` (`porterSandboxEnv`) both read `PORTER_DEPLOY_API_TOKEN`; the first serves `DEPLOY_PROVIDER=porter`, the second `SANDBOX_BACKEND=porter`.
-
-[^deployproviders]: `src/deploy/` holds `aws-`, `docker-`, `fly-`, and `porter-deploy-provider.ts`; there is no Kubernetes provider.
-
-[^authclientlen]: `plugins/auth/src/config.ts:169` — `AUTH_CLIENT_SECRET must be at least 32 characters`.
-
-[^helmalias]: `deploy/helm/templates/secret.yaml:18` renders `OIDC_CLIENT_SECRET` from `AUTH_CLIENT_SECRET` when the former is unset.
-
-[^piharness]: `src/harness/pi-harness.ts:399` sends the key as `x-api-key`; `:1181` pushes per-provider keys into the Pi runtime.
+[^piharness]: `src/harness/pi-harness.ts:399` sends the key as `x-api-key`; the per-provider keys are pushed into the Pi runtime at creation.
 
 [^claudeharness]: `src/harness/claude-harness.ts:98` lists `ANTHROPIC_AUTH_TOKEN` among the variables passed through to the child process.
 
 [^modelgate]: `src/deployment/secret-schema.ts:37` — `ANTHROPIC_API_KEY` is required when the `model-anthropic` gate is on.
 
-[^clientresolver]: `src/connectors/connector-client-store.ts:124` — `createConnectorClientResolver` returns the durable-store record when one exists and otherwise delegates to `createSecretClientResolver(secretSource)`; `src/wiring.ts:1016` wires it with the layered `secretSource`.
+[^clientresolver]: `src/connectors/connector-client-store.ts:124` — `createConnectorClientResolver` returns the durable-store record when one exists and otherwise delegates to `createSecretClientResolver(secretSource)`; `src/wiring.ts` wires it with the layered `secretSource`.
 
 [^pkce]: `src/connectors/oauth.ts:428` sets `pkce: true` for X; `:560` sends `code_challenge` with `S256`; `:112` always includes `client_secret` in the token-exchange body; `:466` throws when no secret resolves.
 
-[^undeclaredoauth]: `src/connectors/oauth.ts` declares `clientSecretEnv` for seven providers; `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `X_OAUTH_CLIENT_SECRET` appear in neither `cli/src/secrets.ts` nor `src/deployment/secret-schema.ts`.
-
-[^publishdispatch]: `.github/workflows/publish-cli.yml:18` — the workflow declares `workflow_dispatch` alongside `workflow_call`.
-
-[^npmdeprecate]: `.github/workflows/publish-cli.yml:109` — `npm deprecate @yc-software/qm@1.0.5` runs when the published version is 0.1.5.
-
-[^idtoken]: `.github/workflows/publish-cli.yml:29` — `id-token: write` at the workflow level.
-
-[^engines]: `cli/package.json:27` — `engines` declares `node >=24.0.0` and nothing for npm.
+[^undeclaredoauth]: `src/connectors/oauth.ts` declares `clientSecretEnv` for seven providers; `SLACK_OAUTH_CLIENT_SECRET`, `NOTION_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, and `X_OAUTH_CLIENT_SECRET` appear in neither `src/deployment/secret-schema.ts` nor the chart’s `secretEnv`.
 
 [^slackrefresh]: `src/surfaces/slack-installation.ts` stores `botTokenEnc` and `appTokenEnc` and nothing else; no refresh token, expiry, or `oauth.v2.exchange` call exists under `src/slack/` or `src/surfaces/`.
 
-[^plainhttp]: `deploy/helm/templates/deployment.yaml:50` — `CORE_API_URL` is rendered as `http://…`; `:57` and `:58` do the same for `WEB_UI_UPSTREAM` and `ADMIN_UPSTREAM`.
+[^plainhttp]: `deploy/helm/templates/deployment.yaml` — `CORE_API_URL` is rendered as `http://…`.
 
 [^replay]: `src/auth/source-auth.ts:57` — `createSourceAuth` verifies the signature within a replay window and then claims `eventId` in a dedupe store; a duplicate is rejected as already processed.
-
-[^stswebid]: Anthropic, _Use WIF with AWS_, <https://platform.claude.com/docs/en/manage-claude/wif-providers/aws> — documents `aws sts get-web-identity-token --audience … --signing-algorithm RS256 --duration-seconds …`, the account-level outbound-federation flag, the `sts:GetWebIdentityToken` permission, the per-account issuer URL with discovery JWKS, and the `sub` and `https://sts.amazonaws.com/` claim shapes. Fetched from this session; the AWS STS reference itself was not reachable.
 
 [^offlinejwt]: Kubernetes, _Managing Service Accounts_ — services that verify JWTs offline "do not verify the claims embedded in the JWT token to be current and still valid"; a token bound to a deleted object "will still be considered valid (until the configured token expires)"; clients needing that assurance "MUST use the TokenReview API." Fetched from the kubernetes/website source.
 
@@ -1279,36 +1033,14 @@ folded into a phase or recorded above as a decision.
 
 [^openaiwif]: OpenAI Python SDK, `README.md` on `main` — section "Workload Identity Authentication": `k8s_service_account_token_provider`, `gcp_id_token_provider(audience="https://api.openai.com/v1")`, `azure_managed_identity_token_provider`, a custom `token_type: "jwt"` provider, `refresh_buffer_seconds` default 1200; `_client.py` takes `workload_identity`; the Node client's `workloadIdentity` is "OAuth2 token exchange authentication. Mutually exclusive with `apiKey`." Changelog: short-lived token support in 2.31.0 (2026-04-08). OpenAI docs: <https://developers.openai.com/api/docs/guides/workload-identity-federation> and the Kubernetes guide beneath it, which state RFC 8693 exchange, OIDC discovery with a 600-second JWKS cache, a Platform service account as the principal, and that legacy Secret-stored tokens are unsupported. The SDK sources were fetched from this session; the docs were read through search excerpts.
 
-[^openaibase]: `src/model/provider-endpoints.ts:18` maps the OpenAI provider to `OPENAI_BASE_URL`; `src/config.ts:1194` sets it on the Codex child environment; `src/harness/codex-harness.ts:233` passes it through.
+[^openaibase]: `src/model/provider-endpoints.ts:18` maps the OpenAI provider to `OPENAI_BASE_URL`; `src/config.ts` sets it on the Codex child environment; `src/harness/codex-harness.ts:233` passes it through.
 
 [^codexauth]: `src/harness/codex-harness.ts:272` — when `OPENAI_API_KEY` is set, the harness writes `{ auth_mode: "apikey", OPENAI_API_KEY }` into the child's `auth.json`.
 
-[^rdsiamexcl]: AWS re:Post, _Connect to an RDS PostgreSQL instance using IAM authentication_ — if `rds_iam` is added to a user, "IAM authentication takes precedence over password authentication, so the user must log in as an IAM user"; "you can only use one authentication method per user." Read through search excerpts; the AWS docs host was unreachable.
+[^delegation]: `src/api/server.ts:293` verifies the `x-portal-identity` header under `PORTAL_IDENTITY_SECRET` beside the caller's own source-auth signature, so an intermediary that authenticates a user forwards the header and signs the call.
 
-[^rdsproxye2e]: AWS SDK for Go v2, `service/rds/api_op_CreateDBProxy.go` on `main`, doc comment on `DefaultAuthScheme`: "The default authentication scheme that the proxy uses for client connections to the proxy and connections from the proxy to the underlying database. Valid values are NONE and IAM_AUTH. When set to IAM_AUTH, the proxy uses end-to-end IAM authentication to connect to the database." Fetched from this session. Announced in _Amazon RDS Proxy announces support for end-to-end IAM authentication_, AWS What's New, September 2025, for MySQL and PostgreSQL in all RDS Proxy regions.
-
-[^trustedentry]: `plugins/portal/src/trusted-entry.ts:7` reads `PORTAL_TRUSTED_OIDC_CLIENT_SECRET`, requires at least 32 characters, and rejects a value equal to `OIDC_CLIENT_SECRET`, `PORTAL_SESSION_SECRET`, or `CORE_SIGNING_SECRET`; `plugins/portal/src/index.ts:208` loads it. `plugins/portal/README.md` calls the entry a PoC with "Deployment CLI secret wiring ... pending"; the name appears in neither `cli/src/secrets.ts`, `src/deployment/secret-schema.ts`, nor `deploy/helm/values.yaml`.
-
-[^trustedadmin]: `plugins/portal/src/trusted-admin.ts:5` — `provisionTrustedAdmin` signs `{ purpose: "trusted-entry-admin", issuer, subject, org, exp: now + 60_000, jti }` with HS256 under `PORTAL_IDENTITY_SECRET` and posts it under source-auth; `src/api/routes/auth-broker.ts:107` verifies with `deps.portalIdentitySecret`, refusing unless it is 32+ characters, differs from `CORE_SIGNING_SECRET`, and `replayDedupe.durable` is set, then claims the `jti`; the route is registered at `:151` and the portal calls it at `plugins/portal/src/index.ts:1284`.
-
-[^portaljwks]: `plugins/portal/src/oidc.ts:98` — `verifyIdToken` validates signature, issuer, audience, and nonce against the provider's `jwksUri`, and serves both `/auth/callback` and `/auth/trusted/callback`.
-
-[^delegation]: `plugins/admin/src/index.ts:83` reads the `x-portal-identity` header and `:86` verifies it under `PORTAL_IDENTITY_SECRET`; `:28` signs every call to core under `CORE_SIGNING_SECRET`, and `:91` re-emits the header, forwarded at `:120`, `:160`, `:258`, and `:439`; `plugins/web-ui/server/index.ts:371` verifies the same header; `src/api/server.ts:293` verifies it again in core.
-
-[^impclaim]: `plugins/web-ui/server/index.ts:375` reads `claims.imp` as the human impersonator behind a portal identity.
-
-[^capgate]: `src/api/server.ts:189` verifies a presented capability token under `capabilitySecret ?? secret`, and `:288` enters the portal-identity actor path only when no capability was presented.
+[^capgate]: `src/api/server.ts:189` verifies a presented capability token under `capabilitySecret ?? secret`, and `:288` enters the identity actor path only when no capability was presented.
 
 [^capability]: `src/auth/capability-token.ts` mints and verifies the scoped capabilities agents carry; `src/egress-authz-main.ts:92` verifies them under `CAPABILITY_SECRET`, which is why a user capability needs a key the egress proxy does not hold or an asymmetric one.
 
-[^portalcapture]: `plugins/portal/src/index.ts:152` copies `OIDC_CLIENT_SECRET` from `process.env` into the module-level `OIDC` configuration; `:208` builds the trusted-entry configuration from `process.env` once at load.
-
-[^ecstaskprot]: `src/wiring.ts:2019` — `createEcsTaskProtection(config.ecsAgentUri)` is constructed only when `ecsTaskProtection` and `ecsAgentUri` are set; nothing equivalent exists for Kubernetes.
-
-[^ses]: `cli/src/commands/setup.ts:92` — "for SES, the SMTP credential, not an AWS access key".
-
-[^sessmtp]: AWS, _Obtaining Amazon SES SMTP credentials_, <https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html> — the SMTP user name is the IAM access key ID and the SMTP password is derived from the secret access key, so a new access key changes both. Cited by the external review; the AWS docs host was unreachable from this session, so this rests on the review's reading of that page alone.
-
-[^mailers]: `plugins/auth/src/index.ts:17` — `CFG = readConfig(process.env)` once at load; `:29` — `mailerFor(CFG)` once; `plugins/auth/src/email.ts:23` captures `Bearer ${cfg.resendApiKey}` at construction and `:56` copies `cfg.smtp` into the options every send reuses.
-
-[^coremailer]: `src/wiring.ts:2280` — `createResendMailer(config.resendApiKey, config.emailFrom)`, guarded at `:2279` and built once at boot from `src/index.ts:25`; `src/admin/invite-email.ts:18` sends the captured bearer.
+[^coremailer]: `src/wiring.ts` — `createResendMailer(config.resendApiKey, config.emailFrom)`, built once at boot; `src/admin/invite-email.ts:18` sends the captured bearer.

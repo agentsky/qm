@@ -141,7 +141,7 @@ test("provider errors are actionable without exposing raw provider text", () => 
   }
 });
 
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 import { verificationUpstream } from "./support/model-verification-upstream.ts";
 import { buildApp, serverDeps } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";

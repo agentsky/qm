@@ -53,8 +53,8 @@ function hostBackend(name: string, homeDir: string): Sandbox {
 }
 
 function start(root: string) {
-  const fat = hostBackend("aws", join(root, "aws-home"));
-  const thin = hostBackend("sprites", join(root, "sprites-home"));
+  const fat = hostBackend("e2b", join(root, "e2b-home"));
+  const thin = hostBackend("modal", join(root, "modal-home"));
   (fat as { exportFiles?: unknown }).exportFiles = async () => [];
   const routes = createMemoryMap<SandboxRoute>();
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "admin-migrate-")) }));
@@ -64,9 +64,9 @@ function start(root: string) {
     auditLog: built.auditLog,
     workspace: built.workspace,
     sandboxMigration: createSandboxMigrationRunner({
-      backends: { aws: fat, sprites: thin },
+      backends: { e2b: fat, modal: thin },
       routes,
-      defaultBackend: "aws",
+      defaultBackend: "e2b",
     }),
   });
   server.listen(0);
@@ -84,8 +84,8 @@ const migrate = (base: string, scopeId: string, body: unknown, headers: Record<s
 
 test("copyTimeoutSec stretches the copy budget through to the guest execs, clamped to sane bounds", async () => {
   const root = mkdtempSync(join(tmpdir(), "admin-migrate-timeout-"));
-  const fat = hostBackend("aws", join(root, "aws-home"));
-  const thin = hostBackend("sprites", join(root, "sprites-home"));
+  const fat = hostBackend("e2b", join(root, "e2b-home"));
+  const thin = hostBackend("modal", join(root, "modal-home"));
   (fat as { exportFiles?: unknown }).exportFiles = async () => [];
   const timeouts: number[] = [];
   const origRun = fat.run.bind(fat);
@@ -100,15 +100,15 @@ test("copyTimeoutSec stretches the copy budget through to the guest execs, clamp
     auditLog: built.auditLog,
     workspace: built.workspace,
     sandboxMigration: createSandboxMigrationRunner({
-      backends: { aws: fat, sprites: thin },
+      backends: { e2b: fat, modal: thin },
       routes: createMemoryMap<SandboxRoute>(),
-      defaultBackend: "aws",
+      defaultBackend: "e2b",
     }),
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
   try {
-    const res = await migrate(base, "personal:U9", { to: "sprites", force: true, copyTimeoutSec: 999_999 });
+    const res = await migrate(base, "personal:U9", { to: "modal", force: true, copyTimeoutSec: 999_999 });
     assert.equal(res.status, 200);
     assert.ok(
       timeouts.includes(7200 * 1000),
@@ -124,9 +124,9 @@ test("the migrate endpoint refuses a capability-losing move, then records what f
   const root = mkdtempSync(join(tmpdir(), "admin-migrate-e2e-"));
   const s = start(root);
   try {
-    writeFileSync(join(root, "aws-home", "notes.txt"), "hello\n");
+    writeFileSync(join(root, "e2b-home", "notes.txt"), "hello\n");
 
-    const refused = await migrate(s.base, "personal:yna", { to: "sprites" });
+    const refused = await migrate(s.base, "personal:yna", { to: "modal" });
     assert.equal(refused.status, 409);
     const refusedBody = (await refused.json()) as { error: string; message: string };
     assert.equal(refusedBody.error, "migration_failed");
@@ -138,15 +138,15 @@ test("the migrate endpoint refuses a capability-losing move, then records what f
       "the refusal is audited",
     );
 
-    const forced = await migrate(s.base, "personal:yna", { to: "sprites", reason: "canary", force: true });
+    const forced = await migrate(s.base, "personal:yna", { to: "modal", reason: "canary", force: true });
     assert.equal(forced.status, 200);
     const body = (await forced.json()) as { to: string; capabilitiesLost: string[]; sha: string };
-    assert.equal(body.to, "sprites");
+    assert.equal(body.to, "modal");
     assert.deepEqual(body.capabilitiesLost, ["home export (publish, resident-auth capture)"]);
 
-    assert.equal(readFileSync(join(root, "sprites-home", "notes.txt"), "utf8"), "hello\n");
+    assert.equal(readFileSync(join(root, "modal-home", "notes.txt"), "utf8"), "hello\n");
     const route = await s.routes.get("personal:yna");
-    assert.equal(route?.backend, "sprites");
+    assert.equal(route?.backend, "modal");
     assert.equal(route?.reason, "canary");
     assert.deepEqual(route?.capabilitiesLost, ["home export (publish, resident-auth capture)"]);
 
@@ -167,7 +167,7 @@ test("migrating a scope is org-admin only", async () => {
     const r = await migrate(
       s.base,
       "personal:yna",
-      { to: "sprites", force: true },
+      { to: "modal", force: true },
       {
         "x-admin-actor": "stranger@default-org",
         "content-type": "application/json",

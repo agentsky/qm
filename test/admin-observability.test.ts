@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -1037,7 +1037,7 @@ test("the Files view is the document store (write-tool artifacts), not the sandb
     runs: built.runs,
     workspace: built.workspace,
     files: built.files,
-    sandboxBackend: "sprites",
+    sandboxBackend: "smolmachines",
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -1108,7 +1108,7 @@ test("a saved document is read and downloaded by artifact id", async () => {
     runs: built.runs,
     workspace: built.workspace,
     files: built.files,
-    sandboxBackend: "sprites",
+    sandboxBackend: "smolmachines",
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -1154,7 +1154,7 @@ test("admin governance reports the sandbox's actual egress enforcement capabilit
       admin: built.admin,
       config: built.config,
       auditLog: built.auditLog,
-      sandboxBackend: "sprites",
+      sandboxBackend: "smolmachines",
       egressDeclaredEnforcement: declared,
       egressEnforcement: effective,
     });
@@ -1167,7 +1167,7 @@ test("admin governance reports the sandbox's actual egress enforcement capabilit
     }
   };
   assert.deepEqual(await read("none", "none"), {
-    backend: "sprites",
+    backend: "smolmachines",
     declaredFidelity: "none",
     effectiveFidelity: "none",
     fidelity: "none",
@@ -1177,7 +1177,7 @@ test("admin governance reports the sandbox's actual egress enforcement capabilit
   assert.deepEqual(
     await read("ip_port", "ip_port"),
     {
-      backend: "sprites",
+      backend: "smolmachines",
       declaredFidelity: "ip_port",
       effectiveFidelity: "ip_port",
       fidelity: "ip_port",
@@ -1187,7 +1187,7 @@ test("admin governance reports the sandbox's actual egress enforcement capabilit
     "IP/port fidelity cannot enforce a hostname policy",
   );
   assert.deepEqual(await read("domain", "none"), {
-    backend: "sprites",
+    backend: "smolmachines",
     declaredFidelity: "domain",
     effectiveFidelity: "none",
     fidelity: "none",
@@ -1195,7 +1195,7 @@ test("admin governance reports the sandbox's actual egress enforcement capabilit
     reason: "control_plane_unconfigured",
   });
   assert.deepEqual(await read("domain", "domain"), {
-    backend: "sprites",
+    backend: "smolmachines",
     declaredFidelity: "domain",
     effectiveFidelity: "domain",
     fidelity: "domain",

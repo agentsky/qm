@@ -2,7 +2,6 @@ import { test, before } from "node:test";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { migrateRegisteredPgSchemas, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
-import { PARALLEL_EXCEPTION_QUERY } from "../src/deployment/postdeploy-smoke.ts";
 import {
   backfillSessionOriginBatch,
   createPostgresSessionStore,
@@ -1014,6 +1013,17 @@ test("pg safe JSON functions are marked parallel-unsafe", { skip }, async () => 
     await raw.end();
   }
 });
+
+const PARALLEL_EXCEPTION_QUERY = `
+  SELECT n.nspname AS schema_name, p.proname AS function_name
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  JOIN pg_language l ON l.oid = p.prolang
+  WHERE l.lanname = 'plpgsql'
+    AND p.proparallel = 's'
+    AND p.prosrc ~* '\\mEXCEPTION\\M'
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+`;
 
 test("no plpgsql exception handler is marked parallel-safe anywhere in the schema", { skip }, async () => {
   const seed = createPostgresSessionStore(URL!);

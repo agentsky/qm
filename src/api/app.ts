@@ -8,7 +8,7 @@ import { createDeploymentMethods } from "./app-deployments.ts";
 import { createSkillMethods } from "./app-skills.ts";
 import { createSearchMethods } from "./app-search.ts";
 
-export type { App, AppDeps, ContextSummary, ProjectView, VisibleCron } from "./app-types.ts";
+export type { App, AppDeps, ContextSummary, VisibleCron } from "./app-types.ts";
 export { deploymentView, STALE_LEASE_GRACE_MS } from "./app-types.ts";
 export type { DeployInput } from "../deploy/deploy-service.ts";
 

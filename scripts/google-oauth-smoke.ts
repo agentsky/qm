@@ -3,7 +3,6 @@ import { parseEnv } from "node:util";
 import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { buildApp } from "../src/wiring.ts";
@@ -12,7 +11,7 @@ import { createServer } from "../src/api/server.ts";
 import { PROVIDERS } from "../src/connectors/oauth.ts";
 import { scopeId } from "../src/types.ts";
 import { buildGoogleWorkspaceReadSmokeCommand } from "./google-workspace-read-smoke-command.ts";
-import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../plugins/chassis/src/portal-identity.ts";
+import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
 
 type Json = Record<string, unknown>;
 
@@ -48,22 +47,6 @@ async function freePort(): Promise<number> {
     });
     server.on("error", reject);
   });
-}
-
-async function waitFor(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-      last = `HTTP ${res.status}`;
-    } catch (e) {
-      last = e instanceof Error ? e.message : String(e);
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error(`timed out waiting for ${url}${last ? ` (${last})` : ""}`);
 }
 
 async function readJson(res: Response): Promise<Json> {
@@ -133,19 +116,12 @@ async function probeGoogleTokenEndpoint(redirectUri: string): Promise<string> {
   return error || `http_${res.status}`;
 }
 
-async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
-  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+function signedGet(pathWithQuery: string): Promise<Response> {
+  return fetch(`${coreBase}${pathWithQuery}`, { headers: signedHeaders(secret, "GET", pathWithQuery) });
 }
 
-function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null || child.killed) return Promise.resolve();
-  return new Promise((resolveStop) => {
-    child.once("exit", () => resolveStop());
-    child.kill("SIGTERM");
-    setTimeout(() => {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }, 2_000).unref();
-  });
+async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 }
 
 const loadedEnv = loadEnvFallbacks();
@@ -167,10 +143,8 @@ const actor = process.env.GOOGLE_OAUTH_SMOKE_PRINCIPAL ?? `google-oauth-smoke-${
 const orgId = process.env.ORG_ID ?? "acme";
 const secret = process.env.CORE_SIGNING_SECRET ?? `google-oauth-smoke-${randomUUID()}`;
 const corePort = await freePort();
-const webPort = await freePort();
 const coreBase = `http://127.0.0.1:${corePort}`;
-const webBase = `http://127.0.0.1:${webPort}`;
-const redirectUri = `${webBase}/connectors/oauth/google/callback`;
+const redirectUri = `${coreBase}/v1/connectors/oauth/google/callback`;
 const expectedRedirect = process.env.GOOGLE_OAUTH_REDIRECT_URI ?? process.env.GOOGLE_OAUTH_REGISTERED_REDIRECT_URI;
 
 if (expectedRedirect && expectedRedirect !== redirectUri) {
@@ -196,40 +170,19 @@ const core = createServer(built.app, {
   oauthEnv: process.env,
 });
 
-let web: ChildProcessWithoutNullStreams | null = null;
 try {
   await new Promise<void>((resolveListen) => core.listen(corePort, "127.0.0.1", () => resolveListen()));
-  web = spawn(process.execPath, ["plugins/web-ui/server/index.ts"], {
-    cwd: process.cwd(),
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: process.env.HOME ?? "",
-      NODE_OPTIONS: process.env.NODE_OPTIONS ?? "",
-      CORE_API_URL: coreBase,
-      CORE_ORG_ID: orgId,
-      CORE_SIGNING_SECRET: secret,
-      PORT: String(webPort),
-      WEB_UI_PUBLIC_URL: webBase,
-      WEB_UI_PRINCIPALS: actor,
-    },
-  });
-  web.stderr.on("data", (chunk) => {
-    const text = String(chunk);
-    if (!/WEB_UI_PRINCIPALS unset/.test(text)) process.stderr.write(`[web-ui] ${text}`);
-  });
-  await waitFor(`${webBase}/healthz`, 10_000);
 
-  const identity = {
-    [PORTAL_IDENTITY_HEADER]: mintPortalIdentity({ p: actor, exp: Date.now() + 10 * 60_000 }, secret),
-  };
-
-  const statusBefore = await fetch(`${webBase}/api/connectors`, { headers: identity });
+  const statusPath = `/v1/connectors/oauth/status?principalId=${encodeURIComponent(actor)}`;
+  const statusBefore = await signedGet(statusPath);
   const statusBeforeBody = await readJson(statusBefore);
-  assertOk(statusBefore, statusBeforeBody, "web connector status");
+  assertOk(statusBefore, statusBeforeBody, "core connector status");
 
-  const start = await fetch(`${webBase}/api/connectors/google/start`, { method: "POST", headers: identity });
+  const start = await signedGet(
+    `/v1/connectors/oauth/google/start?principalId=${encodeURIComponent(actor)}&redirectUri=${encodeURIComponent(redirectUri)}`,
+  );
   const startBody = await readJson(start);
-  assertOk(start, startBody, "web connector start");
+  assertOk(start, startBody, "core connector start");
   const authorize = new URL(String(startBody.authorizeUrl ?? ""));
   if (authorize.origin + authorize.pathname !== provider.authUrl)
     throw new Error("Google consent URL has the wrong authorization endpoint");
@@ -241,11 +194,11 @@ try {
   if (!state) throw new Error("Google consent URL is missing state");
 
   const forged = await fetch(
-    `${webBase}/connectors/oauth/google/callback?code=forged-smoke-code&state=forged-smoke-state`,
+    `${coreBase}/v1/connectors/oauth/google/callback?code=forged-smoke-code&state=forged-smoke-state`,
     { redirect: "manual" },
   );
   if (forged.status !== 400)
-    throw new Error(`web callback route did not forward/reject forged callback as expected (HTTP ${forged.status})`);
+    throw new Error(`core callback route did not reject the forged callback as expected (HTTP ${forged.status})`);
   const providerProbe = await probeGoogleTokenEndpoint(redirectUri);
 
   console.log("google oauth readiness ok");
@@ -269,9 +222,9 @@ try {
     const deadline = Date.now() + timeoutMs;
     let connected = false;
     while (Date.now() < deadline) {
-      const status = await fetch(`${webBase}/api/connectors`, { headers: identity });
+      const status = await signedGet(statusPath);
       const statusBody = await readJson(status);
-      assertOk(status, statusBody, "web connector status during interactive wait");
+      assertOk(status, statusBody, "core connector status during interactive wait");
       connected = providerStatus(statusBody).connected;
       if (connected) break;
       await new Promise((r) => setTimeout(r, 1_000));
@@ -287,7 +240,6 @@ try {
     console.log("google oauth smoke complete: live Google callback stored a token without printing it");
   }
 } finally {
-  if (web) await stopChild(web);
   await closeServer(core);
   await built.runtime.stop();
 }

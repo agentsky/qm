@@ -12,15 +12,11 @@ export const EXIT = {
   doctorCritical: 10,
 } as const;
 
-export type ChildName = "core" | "web" | "admin" | "portal";
-export const CHILD_ORDER: ChildName[] = ["core", "web", "portal"];
+export type ChildName = "core";
+export const CHILD_ORDER: ChildName[] = ["core"];
 
 export interface SlotPorts {
   core: number;
-  web: number;
-  admin: number;
-  portal: number;
-  prodProxy: number;
   slackHealth: number;
   supervisor: number;
 }
@@ -108,7 +104,7 @@ export interface BootSpec {
   branch: string;
   callerEnv: Record<string, string>;
   watch: boolean;
-  sandbox: "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37" | "auto";
+  sandbox: "local" | "smolmachines" | "e2b" | "agent37" | "auto";
   canaryChannel?: string;
   strict: boolean;
   slack?: boolean;

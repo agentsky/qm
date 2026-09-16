@@ -63,7 +63,6 @@ test("store kinds default to memory and accept postgres", () => {
 
 test("deploy provider defaults to docker and rejects unknown values", () => {
   assert.equal(loadConfig({}).deployProvider, "docker");
-  assert.equal(loadConfig({ DEPLOY_PROVIDER: "fly", FLY_DEPLOY_API_TOKEN: "test-token" }).deployProvider, "fly");
   assert.throws(() => loadConfig({ DEPLOY_PROVIDER: "flly" }), /DEPLOY_PROVIDER="flly" is not recognized/);
 });
 
@@ -268,7 +267,7 @@ test("Slack HTTP ingress exposes only a valid configured receiver port", () => {
 });
 
 test("sandbox backend is parsed once before production backend guards", () => {
-  assert.equal(loadConfig({ SANDBOX_BACKEND: " aws " }).sandboxBackend, "aws");
+  assert.equal(loadConfig({ SANDBOX_BACKEND: " e2b ", E2B_API_KEY: "k" }).sandboxBackend, "e2b");
   assert.throws(
     () => loadConfig({ ...productionEnv, SANDBOX_BACKEND: "bogus" }),
     /SANDBOX_BACKEND="bogus" is not recognized/,
@@ -388,7 +387,7 @@ test("SANDBOX_BACKEND: unset defaults to local (dev only); the retired secondary
     () => loadConfig({ ...productionEnv, SANDBOX_BACKEND: undefined }),
     /SANDBOX_BACKEND must be set explicitly in production/,
   );
-  assert.throws(() => loadConfig({ SANDBOX_BACKEND: "sprites" }), /SPRITES_TOKEN/);
+  assert.throws(() => loadConfig({ SANDBOX_BACKEND: "smolmachines" }), /SMOLMACHINES_TOKEN/);
   assert.throws(() => loadConfig({ SANDBOX_BACKEND: "agent37" }), /AGENT37_API_KEY/);
   assert.equal(loadConfig({ SANDBOX_BACKEND: "agent37", AGENT37_API_KEY: "sk_live_k" }).sandboxBackend, "agent37");
   const config = loadConfig({ SANDBOX_SECONDARY_BACKEND: "smolmachines" });
@@ -396,14 +395,12 @@ test("SANDBOX_BACKEND: unset defaults to local (dev only); the retired secondary
   assert.ok(!("sandboxSecondaryBackend" in config));
 });
 
-test("Fly identity and Slack runtime settings are parsed once into Config", () => {
+test("Slack runtime settings are parsed once into Config", () => {
   const config = loadConfig({
-    FLY_APP_NAME: "qm-core",
     SLACK_BOT_TOKEN: "xoxb-test",
     SLACK_APP_TOKEN: "xapp-test",
     SLACK_API_URL: "https://slack.example/api",
   });
-  assert.equal(config.flyAppName, "qm-core");
   assert.deepEqual(config.slack, {
     botToken: "xoxb-test",
     appToken: "xapp-test",
@@ -457,135 +454,17 @@ test("baseModelProviders constrains the base model only when a provider is decla
   );
 });
 
-test("DEPLOY_PROVIDER=porter selects the Porter deploy provider and reads its env", () => {
+test("DEPLOY_APPS_DOMAIN feeds the subdomain gate and requires DEPLOY_GATE_SECRET", () => {
   const config = loadConfig({
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_PROJECT_ID: "7",
-    PORTER_DEPLOY_CLUSTER_ID: "9",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_DEPLOY_APPS_DOMAIN: "apps.example.com",
-    PORTER_DEPLOY_RUNNER_IMAGE: "ghcr.io/x/runner:1",
-    PORTER_DEPLOY_VISIBILITY: "private",
-    PORTER_DEPLOY_TTL_SEC: "3600",
-  });
-  assert.equal(config.deployProvider, "porter");
-  assert.deepEqual(config.porterDeploy, {
-    token: "tok",
-    baseUrl: "https://dashboard.porter.run/api/v2/alpha/projects/7/clusters/9",
-    runnerImage: "ghcr.io/x/runner:1",
-    appsDomain: "apps.example.com",
-    visibility: "private",
-    ttlSec: 3600,
-  });
-});
-
-test("the deploy runner image falls back to the sandbox image", () => {
-  const config = loadConfig({
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_PROJECT_ID: "7",
-    PORTER_DEPLOY_CLUSTER_ID: "9",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_DEPLOY_APPS_DOMAIN: "apps.example.com",
-    PORTER_SANDBOX_IMAGE: "localhost:5000/qm-sandbox:latest",
-  });
-  assert.equal(config.porterDeploy.runnerImage, "localhost:5000/qm-sandbox:latest");
-});
-
-test("DEPLOY_PROVIDER=porter refuses to boot without a cluster and tolerates a missing apps domain", () => {
-  assert.throws(
-    () =>
-      loadConfig({
-        DEPLOY_PROVIDER: "porter",
-        PORTER_DEPLOY_API_TOKEN: "tok",
-        PORTER_DEPLOY_APPS_DOMAIN: "apps.example.com",
-      }),
-    /PORTER_DEPLOY_PROJECT_ID/,
-  );
-  assert.equal(
-    loadConfig({
-      DEPLOY_PROVIDER: "porter",
-      PORTER_DEPLOY_API_TOKEN: "tok",
-      PORTER_DEPLOY_PROJECT_ID: "7",
-      PORTER_DEPLOY_CLUSTER_ID: "9",
-    }).porterDeploy.appsDomain,
-    undefined,
-  );
-  assert.throws(
-    () =>
-      loadConfig({
-        DEPLOY_PROVIDER: "porter",
-        PORTER_DEPLOY_API_TOKEN: "tok",
-        PORTER_DEPLOY_PROJECT_ID: "7",
-        PORTER_DEPLOY_CLUSTER_ID: "9",
-        PORTER_DEPLOY_APPS_DOMAIN: "a.b",
-        PORTER_DEPLOY_VISIBILITY: "hidden",
-      }),
-    /PORTER_DEPLOY_VISIBILITY/,
-  );
-});
-
-test("SANDBOX_BACKEND=porter locates the API and shares the deploy provider's token", () => {
-  assert.throws(
-    () => loadConfig({ SANDBOX_BACKEND: "porter", PORTER_DEPLOY_API_TOKEN: "tok" }),
-    /PORTER_DEPLOY_PROJECT_ID/,
-  );
-  const inCluster = loadConfig({
-    SANDBOX_BACKEND: "porter",
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_CLUSTER_ID: "3",
-    PORTER_SANDBOX_TTL_SEC: "120",
-  });
-  assert.equal(inCluster.porterSandbox.token, "tok");
-  assert.equal(inCluster.porterSandbox.ttlSec, 120);
-  assert.equal(inCluster.porterDeploy.token, "tok");
-});
-
-test("DEPLOY_APPS_DOMAIN is the one-var apps setup: it feeds the gate and defaults every provider's domain", () => {
-  const config = loadConfig({
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_DEPLOY_PROJECT_ID: "7",
-    PORTER_DEPLOY_CLUSTER_ID: "9",
     DEPLOY_APPS_DOMAIN: "apps.example.com",
-    AWS_DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef",
+    DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef",
   });
   assert.equal(config.deployAppsDomain, "apps.example.com");
-  assert.equal(
-    config.porterDeploy.appsDomain,
-    undefined,
-    "the gate domain must not be registered on Porter ingress — that would bypass the gate or loop the proxy",
+  assert.equal(config.deployGateSecret, "0123456789abcdef0123456789abcdef");
+  assert.throws(
+    () => loadConfig({ DEPLOY_APPS_DOMAIN: "apps.example.com" }),
+    /missing or insecure required core secrets: DEPLOY_GATE_SECRET/,
   );
-  assert.equal(config.awsDeploy.appsDomain, "apps.example.com");
-  const overridden = loadConfig({
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_DEPLOY_PROJECT_ID: "7",
-    PORTER_DEPLOY_CLUSTER_ID: "9",
-    DEPLOY_APPS_DOMAIN: "apps.example.com",
-    PORTER_DEPLOY_APPS_DOMAIN: "apps.other.example.com",
-    AWS_DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef",
-  });
-  assert.equal(overridden.porterDeploy.appsDomain, "apps.other.example.com");
-  assert.equal(overridden.deployAppsDomain, "apps.example.com");
-});
-
-test("the active provider's own apps domain reaches the gate when DEPLOY_APPS_DOMAIN is unset", () => {
-  const porter = loadConfig({
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_DEPLOY_PROJECT_ID: "7",
-    PORTER_DEPLOY_CLUSTER_ID: "9",
-    PORTER_DEPLOY_APPS_DOMAIN: "apps.example.com",
-  });
-  assert.equal(porter.deployAppsDomain, "apps.example.com");
-  assert.equal(porter.awsDeploy.appsDomain, undefined);
-  assert.equal(porter.porterDeploy.appsDomain, "apps.example.com");
-  const aws = loadConfig({
-    AWS_DEPLOY_APPS_DOMAIN: "apps.example.com",
-    AWS_DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef",
-  });
-  assert.equal(aws.deployAppsDomain, "apps.example.com");
   assert.equal(loadConfig({}).deployAppsDomain, undefined);
 });
 
@@ -593,14 +472,14 @@ test("DEPLOY_APPS_DOMAIN refuses shared platform domains that cannot carry per-a
   assert.throws(() => loadConfig({ DEPLOY_APPS_DOMAIN: "myapp.onporter.run" }), /shared platform domain/);
   assert.throws(() => loadConfig({ DEPLOY_APPS_DOMAIN: "myapp.fly.dev" }), /shared platform domain/);
   assert.equal(
-    loadConfig({ DEPLOY_APPS_DOMAIN: "apps.example.com", AWS_DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef" })
+    loadConfig({ DEPLOY_APPS_DOMAIN: "apps.example.com", DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef" })
       .deployAppsDomain,
     "apps.example.com",
   );
 });
 
 test("DEPLOY_APPS_DOMAIN must be a bare DNS name, normalized to lowercase without a trailing dot", () => {
-  const gate = { AWS_DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef" };
+  const gate = { DEPLOY_GATE_SECRET: "0123456789abcdef0123456789abcdef" };
   assert.equal(loadConfig({ DEPLOY_APPS_DOMAIN: "Apps.Example.COM.", ...gate }).deployAppsDomain, "apps.example.com");
   assert.throws(() => loadConfig({ DEPLOY_APPS_DOMAIN: "https://apps.example.com", ...gate }), /bare domain/);
   assert.throws(() => loadConfig({ DEPLOY_APPS_DOMAIN: "apps.example.com:443@evil.example", ...gate }), /bare domain/);
@@ -608,22 +487,13 @@ test("DEPLOY_APPS_DOMAIN must be a bare DNS name, normalized to lowercase withou
   assert.throws(() => loadConfig({ DEPLOY_APPS_DOMAIN: "myapp.fly.dev.", ...gate }), /shared platform domain/);
 });
 
-test("the portal session secret doubles as the deploy-apps viewer secret when a login URL exists", () => {
-  const derived = loadConfig({ PORTAL_SESSION_SECRET: "shared", PUBLIC_WEB_URL: "https://qm.example.com" });
-  assert.equal(derived.deployAppsSessionSecret, "shared");
-  assert.equal(derived.deployAppsLoginUrl, "https://qm.example.com");
-  const noUrl = loadConfig({ PORTAL_SESSION_SECRET: "shared" });
-  assert.equal(
-    noUrl.deployAppsSessionSecret,
-    undefined,
-    "no sign-in address means the fallback stays off, not a throw",
-  );
-  const explicit = loadConfig({
-    PORTAL_SESSION_SECRET: "shared",
-    DEPLOY_APPS_SESSION_SECRET: "own",
-    PUBLIC_WEB_URL: "https://qm.example.com",
-  });
+test("the deploy-apps viewer secret comes only from DEPLOY_APPS_SESSION_SECRET", () => {
+  const explicit = loadConfig({ DEPLOY_APPS_SESSION_SECRET: "own", PUBLIC_WEB_URL: "https://qm.example.com" });
   assert.equal(explicit.deployAppsSessionSecret, "own");
+  assert.equal(explicit.deployAppsLoginUrl, "https://qm.example.com");
+  const unset = loadConfig({ PUBLIC_WEB_URL: "https://qm.example.com" });
+  assert.equal(unset.deployAppsSessionSecret, undefined);
+  assert.equal(unset.deployAppsLoginUrl, undefined);
 });
 
 test("the deploy-apps sign-in address defaults to the public web URL", () => {
@@ -633,16 +503,6 @@ test("the deploy-apps sign-in address defaults to the public web URL", () => {
   });
   assert.equal(derived.deployAppsLoginUrl, "https://qm.example.com");
   assert.equal(derived.deployAppsSessionSecret, "s");
-  assert.equal(derived.deployAppsLoginPath, "/auth/login");
-  assert.equal(
-    loadConfig({
-      DEPLOY_APPS_SESSION_SECRET: "s",
-      PUBLIC_WEB_URL: "https://qm.example.com",
-      DEPLOY_APPS_LOGIN_PATH: "/auth/trusted/login",
-    }).deployAppsLoginPath,
-    "/auth/trusted/login",
-  );
-  assert.throws(() => loadConfig({ DEPLOY_APPS_LOGIN_PATH: "//evil.example" }), /DEPLOY_APPS_LOGIN_PATH/);
   const explicit = loadConfig({
     DEPLOY_APPS_SESSION_SECRET: "s",
     DEPLOY_APPS_LOGIN_URL: "https://portal.example.com/",
@@ -662,6 +522,28 @@ test("Codex file OAuth satisfies model onboarding without an API key", () => {
   assert.equal(harnessCarriedModelAuth({ ...config, codexAuthFile: undefined }), undefined);
 });
 
+test("retired hosting environment is ignored with one warning naming the Helm chart", () => {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (msg: unknown) => void warnings.push(String(msg));
+  let config;
+  try {
+    config = loadConfig({
+      SECRETS_BACKEND: "aws",
+      SECRETS_PREFIX: "qm-",
+      FLY_APP_NAME: "qm-core",
+      PORTAL_SESSION_SECRET: "x",
+    });
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(config, loadConfig({}));
+  const retired = warnings.filter((w) => w.includes("retired and ignored"));
+  assert.equal(retired.length, 1);
+  assert.match(retired[0]!, /SECRETS_BACKEND, SECRETS_PREFIX, FLY_APP_NAME, PORTAL_SESSION_SECRET are retired/);
+  assert.match(retired[0]!, /Helm chart/);
+});
+
 test("retired brain environment does not configure a runtime integration and warns once", () => {
   const warnings: string[] = [];
   const original = console.warn;
@@ -677,7 +559,7 @@ test("retired brain environment does not configure a runtime integration and war
   } finally {
     console.warn = original;
   }
-  assert.deepEqual({ ...config, layerEnv: {} }, loadConfig({}));
+  assert.deepEqual(config, loadConfig({}));
   const retired = warnings.filter((w) => w.includes("retired and ignored"));
   assert.equal(retired.length, 1);
   assert.match(retired[0]!, /BRAIN, BRAIN_MCP_URL, BRAIN_RO_CLIENT_ID are retired/);
@@ -728,34 +610,22 @@ test("suggestion generation defaults on and can be explicitly disabled", () => {
 
 test("sandbox scope defaults parse exact scope kinds and reject malformed mappings", () => {
   const credentials = {
-    SPRITES_TOKEN: "unit-test-sprites",
+    SMOLMACHINES_TOKEN: "unit-test-smolmachines",
     MODAL_TOKEN_ID: "unit-test-modal-id",
     MODAL_TOKEN_SECRET: "unit-test-modal-secret",
   };
   assert.deepEqual(
-    loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: '{"personal":"modal","channel":"sprites"}' })
+    loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: '{"personal":"modal","channel":"smolmachines"}' })
       .sandboxScopeDefaults,
-    { personal: "modal", channel: "sprites" },
+    { personal: "modal", channel: "smolmachines" },
   );
   for (const value of [
     "[]",
     "null",
     '{"personal:someone":"modal"}',
     '{"personal":"missing"}',
-    '{"unknown":"sprites"}',
+    '{"unknown":"smolmachines"}',
     '{"personal":""}',
   ])
     assert.throws(() => loadConfig({ ...credentials, SANDBOX_SCOPE_BACKENDS: value }));
-});
-
-test("Fly shared application name is passed to the deployment provider", () => {
-  const config = loadConfig({
-    DEPLOY_PROVIDER: "fly",
-    FLY_DEPLOY_SHARED_APP_NAME: "qm-example-apps",
-    FLY_DEPLOY_WIREGUARD_PEERS: "[]",
-    FLY_DEPLOY_API_TOKEN: "test-token",
-    FLY_DEPLOY_DATA_VOLUME_SIZE_GB: "1",
-  });
-  assert.equal(config.flyDeploy.sharedAppName, "qm-example-apps");
-  assert.equal(config.flyDeploy.dataVolumeSizeGb, 1);
 });

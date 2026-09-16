@@ -71,7 +71,7 @@ export interface ProvisionOptions {
   onStatus?: (text: string) => void;
 }
 
-export interface ExecPressure {
+interface ExecPressure {
   ioFull10: number;
   ioFull60: number;
   load1: number;

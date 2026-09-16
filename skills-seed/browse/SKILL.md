@@ -19,8 +19,8 @@ your loopback; use the local headless `chromium` binary.)
 
 Which provider you use is decided by which API key is available in your env (or obtainable
 through the keychain). Org keys arrive automatically: an admin saves a provider's key as an
-org credential delivered as sandbox env (admin UI → Service credentials → delivery "Sandbox
-env"), and it rides into every all-internal conversation — nothing here is deploy config. A
+org credential delivered as sandbox env (a shared service credential whose delivery is
+"Sandbox env"), and it rides into every all-internal conversation — nothing here is deploy config. A
 person's own keychain key overrides the org one. Keys you may see today:
 
 - `KERNEL_API_KEY` → **Kernel** (onkernel.com). Read `skills/browse/providers/kernel.md`.

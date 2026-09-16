@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpritesSandbox } from "../src/sandbox/sprites-sandbox.ts";
+import { createSmolmachinesSandbox } from "../src/sandbox/smolmachines-sandbox.ts";
 import { supportsProcessSessions } from "../src/sandbox/sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
@@ -15,8 +15,8 @@ import { createIdempotencyStore } from "../src/idempotency/idempotency-store.ts"
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { loadConfig } from "../src/config.ts";
 
-if (!process.env.SPRITES_TOKEN) {
-  console.error("set SPRITES_TOKEN (mint one with `sprite login`)");
+if (!process.env.SMOLMACHINES_TOKEN) {
+  console.error("set SMOLMACHINES_TOKEN (create an API key in the smolmachines console)");
   process.exit(1);
 }
 
@@ -52,8 +52,8 @@ print("PHASE: image saved diffusion-out.png", flush=True)
 `;
 
 const ws = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "monitor-smoke-")));
-const sb = createSpritesSandbox(ws, loadConfig().spritesSandbox);
-if (!supportsProcessSessions(sb)) throw new Error("Sprites sandbox does not advertise process sessions");
+const sb = createSmolmachinesSandbox(ws, loadConfig().smolmachinesSandbox);
+if (!supportsProcessSessions(sb)) throw new Error("smolmachines sandbox does not advertise process sessions");
 
 const scope = scopeId("personal", "qm-monitor-smoke");
 const owner = "qm-monitor-smoke";
@@ -111,7 +111,7 @@ const poller = createMonitorPoller({
 });
 
 try {
-  console.log("%s", `[${ts()}] provisioning sprite for`, scope, "…");
+  console.log("%s", `[${ts()}] provisioning machine for`, scope, "…");
   h = await sb.provision([{ scopeId: scope, mountPath: "", mode: "rw" }]);
 
   console.log(`[${ts()}] staging job.sh + diffusion.py into the workspace …`);
@@ -188,6 +188,6 @@ try {
 
   console.log("\nALL MONITOR SMOKE CHECKS PASSED ✅");
 } finally {
-  console.log(`[${ts()}] tearing down: destroying the smoke sprite …`);
+  console.log(`[${ts()}] tearing down: destroying the smoke machine …`);
   if (h) await sb.teardown(h, { destroy: true });
 }

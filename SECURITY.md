@@ -98,16 +98,19 @@ person's entitlement, command approvals, content screening, or egress. In Auto, 
 skills and their bundled files must pass screening before prompt inclusion or materialization;
 flagged, oversized, or unavailable screening leaves the carried skill inaccessible.
 
-### Deliberately portal-only actions
+### Deliberately human-surface-only actions
 
-Three actions are intentionally excluded from the agent self-API, even though the
-web portal offers them. They look like capability-parity gaps in an audit; they are
+Three actions are intentionally excluded from the agent self-API, even though a human
+surface may offer them. They look like capability-parity gaps in an audit; they are
 walls, not gaps, and should not be "fixed" without revisiting the reasoning here.
+Reaching them requires a signed identity assertion: a request carries the user in an
+`x-portal-identity` header that core verifies under `PORTAL_IDENTITY_SECRET`, and an
+agent never holds that key.
 
-- **Admin grant changes.** Granting or revoking org-admin rights happens only in the
-  portal, on an authenticated admin's own turn. If the agent could change grants, a
-  prompt-injected or compromised agent process could escalate its own operator's
-  privileges — or demote everyone else's.
+- **Admin grant changes.** Granting or revoking org-admin rights happens only on a
+  human surface, on an authenticated admin's own turn. If the agent could change
+  grants, a prompt-injected or compromised agent process could escalate its own
+  operator's privileges — or demote everyone else's.
 - **Impersonation.** The agent always acts as the principal resolved for the turn.
   There is no self-API route to act as a different principal, because every
   authorization decision downstream keys off that identity; a switchable identity
@@ -174,9 +177,11 @@ these, not through them.
   to an intended recipient. The gateway removes the token from the address bar and
   places it in a one-day browser cookie, but copied links remain usable and app ACL
   changes do not revoke individual link holders.
-- **Portal sessions have residual risk.** A signed portal session defaults to eight
-  hours and renews on use. Logout clears the browser cookie but cannot revoke an
-  already copied session token before its expiration.
+- **Signed identity assertions have residual risk.** The `x-portal-identity` header
+  is a bearer assertion verified against a shared symmetric key, so any holder of
+  that key can mint one and core accepts exactly one key value. An
+  assertion is valid until it expires; nothing revokes one already issued, and
+  rotating the key is a fleet-wide event with no overlap window.
 - **Some model-provider paths bypass the intended gateway.** The ambient Slack judge's
   model call does not yet use the ModelGateway, and the OpenCode adapter currently
   supplies its provider key to the supervised sidecar.

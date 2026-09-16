@@ -1,4 +1,4 @@
-import { fakeSprites } from "./support/auto-fake-sprites.ts";
+import { fakeSmolmachines } from "./support/auto-fake-smolmachines.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -348,7 +348,9 @@ test("DM + directory + flag: execute(scope:#room) runs on that channel's own com
   assert.equal(res.status, "ok");
   assert.equal(res.reply, "still here");
   assert.ok(
-    fakeSprites.calls.some((c) => c.method === "POST" && /\/sprites\/qm-channel-c-ph-[^/]+\/exec$/.test(c.path)),
+    fakeSmolmachines.calls.some(
+      (c) => c.method === "POST" && c.path.endsWith("/exec") && c.machine?.startsWith("qm-channel-c-ph-"),
+    ),
     "the command landed on the channel's computer",
   );
 });
@@ -357,7 +359,7 @@ test("reach preserves a durable workspace even without a login-probe cache", asy
   const built = freshApp({ reachExecEnabled: true });
   await built.directory.replaceChannels([{ channelId: "C-ph", name: "project-alpha" }]);
   await built.app.turn(dm("!reach #project-alpha printf retained > keep.txt"));
-  assert.ok(fakeSprites.names().some((n) => n.startsWith("qm-channel-c-ph-")));
+  assert.ok(fakeSmolmachines.names().some((n) => n.startsWith("qm-channel-c-ph-")));
   const result = await built.app.turn(dm("!reach #project-alpha cat keep.txt"));
   assert.equal(result.reply, "retained");
 });
@@ -368,7 +370,7 @@ test("reach teardown keeps (does not destroy) a room with its own computer", asy
   await built.livenessCache.put({ scopeId: scopeId("channel", "C-ph"), checkedAt: 1, connectors: {} });
   await built.app.turn(dm("!reach #project-alpha echo hi"));
   assert.ok(
-    fakeSprites.names().some((n) => n.startsWith("qm-channel-c-ph-")),
+    fakeSmolmachines.names().some((n) => n.startsWith("qm-channel-c-ph-")),
     "an operated room's computer is kept, not destroyed",
   );
 });

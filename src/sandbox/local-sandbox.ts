@@ -54,11 +54,17 @@ export interface LocalSandboxOptions {
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 }
 
-const FINGERPRINT_FIXED_SOURCES = ["fly/Dockerfile", "local/Dockerfile", "aws/microvm-agent/agent.mjs"];
+const FINGERPRINT_FIXED_SOURCES = [
+  "deploy/sandbox-base/Dockerfile",
+  "deploy/sandbox-local/Dockerfile",
+  "deploy/sandbox-local/agent.mjs",
+];
 
 export async function computeSandboxImageFingerprint(repoRoot: string): Promise<string | null> {
   try {
-    const tools = (await readdir(join(repoRoot, "fly/tools"))).sort().map((f) => `fly/tools/${f}`);
+    const tools = (await readdir(join(repoRoot, "deploy/sandbox-base/tools")))
+      .sort()
+      .map((f) => `deploy/sandbox-base/tools/${f}`);
     const paths = [...FINGERPRINT_FIXED_SOURCES, ...tools].sort();
     const fp = createHash("sha256");
     for (const p of paths) {

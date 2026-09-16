@@ -4,11 +4,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { killableScript, killScript, pgidMarkerPath } from "../src/sandbox/exec-kill.ts";
-import { createSpritesSandbox } from "../src/sandbox/sprites-sandbox.ts";
+import { createSmolmachinesSandbox } from "../src/sandbox/smolmachines-sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
 import { scopeId } from "../src/types.ts";
-import { installFakeSprites, type FakeSprites } from "./support/fake-sprites.ts";
+import {
+  installFakeSmolmachines,
+  FAKE_SMOLMACHINES_TOKEN,
+  type FakeSmolmachines,
+} from "./support/fake-smolmachines.ts";
 
 test("killableScript: records its PGID to the per-exec marker first, runs under setsid, preserves rc", () => {
   const s = killableScript("do_work", "abc");
@@ -27,24 +31,23 @@ test("killScript: SIGKILLs the whole process group from the marker, retrying for
   assert.ok(s.includes("sleep 0.1"), "spaces retries over a few hundred ms");
 });
 
-let ff: FakeSprites;
+let ff: FakeSmolmachines;
 before(() => {
-  ff = installFakeSprites();
+  ff = installFakeSmolmachines();
 });
 after(() => ff.cleanup());
 
-function sprites(): Sandbox {
-  const dir = mkdtempSync(join(tmpdir(), "sprites-kill-ws-"));
-  return createSpritesSandbox(createLocalWorkspaceStore(dir), {
-    token: "test-token",
-    client: ff.client,
+function smol(): Sandbox {
+  const dir = mkdtempSync(join(tmpdir(), "smol-kill-ws-"));
+  return createSmolmachinesSandbox(createLocalWorkspaceStore(dir), {
+    token: FAKE_SMOLMACHINES_TOKEN,
     fetchImpl: ff.fetchImpl,
   });
 }
 const rw = [{ scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" as const }];
 
 test("run() with a signal wraps the command in the killable process group; without a signal it does not", async () => {
-  const sb = sprites();
+  const sb = smol();
   const h = await sb.provision(rw);
 
   let mark = ff.execScripts().length;
@@ -57,7 +60,7 @@ test("run() with a signal wraps the command in the killable process group; witho
 });
 
 test("run(): an already-aborted signal never starts the command", async () => {
-  const sb = sprites();
+  const sb = smol();
   const h = await sb.provision(rw);
 
   const before = ff.execScripts().length;

@@ -382,12 +382,11 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
             ok: false,
             message:
               "[live search runs as the asking person's own Slack login, and this turn has no connected one — " +
-              "if a person asked, point them at " +
+              "if a person asked, ask them to connect their own Slack" +
               (deps.publicWebUrl
-                ? `${deps.publicWebUrl.replace(/\/$/, "")}/connect/slack/self-connect`
-                : "the web UI's Connectors page") +
-              " to connect their Slack (signing in there identifies them; no link needs minting) " +
-              "instead of concluding the message doesn't exist; " +
+                ? ` at ${deps.publicWebUrl.replace(/\/$/, "")}/connect/slack/self-connect (signing in there identifies them; no link needs minting)`
+                : " (only they can; no link needs minting)") +
+              ", instead of concluding the message doesn't exist; " +
               "on an autonomous turn just say what you couldn't search]",
           };
         if (result.note && !result.messages?.length) return { ok: false, message: result.note };

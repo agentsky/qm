@@ -21,3 +21,4 @@ __pycache__/
 docs/master.html
 
 .context/
+.k3s-e2e-logs/

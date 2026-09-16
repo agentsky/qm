@@ -32,7 +32,6 @@ export interface DeployEndpoint {
   tls?: boolean;
   httpVersion?: "1.1" | "2";
   proxyHeaders?: Record<string, string>;
-  socksProxyPort?: number;
 }
 
 export function publicUrlOf(endpoint: DeployEndpoint | null | undefined): string | undefined {

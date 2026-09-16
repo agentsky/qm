@@ -3,8 +3,8 @@
 A swarm coordinates ordinary QM sessions. The initiating session is its root;
 workers have their own durable transcripts, runs, identity, and editable JSON
 character/context. The existing authenticated session viewer lists worker sessions
-with a `Swarm worker` title. Worker transcripts remain read-only for ordinary messages in the web UI, but the requesting human can allow or deny pending approvals there. Discovery returns their session IDs and portal-relative
-`sessionUrl` links. Session activity and results use the normal viewer and run APIs.
+with a `Swarm worker` title. Worker transcripts stay read-only for ordinary messages, but the requesting human can allow or deny their pending approvals. Discovery returns their session IDs and
+`sessionUrl` links relative to the deployment's public web origin. Session activity and results use the normal viewer and run APIs.
 
 ## Deployment
 
@@ -158,7 +158,7 @@ with different content fails. Context updates are simple replacements.
 ## Human API
 
 Human callers use `GET` and `POST /v1/sessions/:id/swarm` through the existing
-source-authenticated API with a signed portal identity. The caller must already
+source-authenticated API with a signed identity header. The caller must already
 be allowed to view that session and belong to the swarm scope. Request actor
 and provenance selector fields are rejected rather than ignored. Arbitrary keys
 inside `context` remain permitted. Bodies and read parameters match the

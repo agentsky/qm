@@ -39,11 +39,11 @@ import {
 } from "./lib/client.ts";
 import { sweepSlackTokenOrphans } from "./lib/orphans.ts";
 import { destroyLocalDevSandboxes } from "./lib/sandbox.ts";
-import { bestEffort, errMessage, formatAge, nowEpoch, sleep } from "./lib/util.ts";
+import { bestEffort, errMessage, formatAge, nowEpoch, sleep, validOrgId } from "./lib/util.ts";
+import { ciDown, ciUp } from "./commands/ci.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import type { BootPhaseEvent, BootResult, LeaseInfo } from "./lib/types.ts";
 import { CHILD_ORDER, EXIT } from "./lib/types.ts";
-import { validOrgId } from "../../cli/src/config.ts";
 
 function parseCli() {
   try {
@@ -82,9 +82,10 @@ const commandOptions: Record<string, readonly string[]> = {
   canary: ["json"],
   logs: ["follow"],
   doctor: ["json", "fix", "no-slack"],
+  ci: [],
 };
 
-const devServiceNames = [...CHILD_ORDER, "web-ui"];
+const devServiceNames = [...CHILD_ORDER];
 
 const allowedOptions = commandOptions[command];
 if (allowedOptions) {
@@ -93,7 +94,7 @@ if (allowedOptions) {
     console.error(`dev: ${command} does not support ${unsupported.rawName}`);
     process.exit(EXIT.usage);
   }
-  if (command !== "restart" && command !== "logs" && positionals.length > 1) {
+  if (!["restart", "logs", "ci"].includes(command) && positionals.length > 1) {
     console.error(`dev: unexpected argument: ${JSON.stringify(positionals[1])}`);
     process.exit(EXIT.usage);
   }
@@ -120,7 +121,7 @@ const withSlack = !opts["no-slack"] && process.env.DEV_INSTANCE_NO_SLACK !== "1"
 const devCallerEnv = (): Record<string, string> => ({ ...callerEnvSnapshot(), DEV_INSTANCE_ORG_ID: orgId });
 
 async function legacyTeardown(lease: LeaseInfo): Promise<void> {
-  for (const name of ["portal", "admin", "web", "web-build", "slack", "core", "tunnel", "supervisor"]) {
+  for (const name of ["slack", "core", "tunnel", "supervisor"]) {
     const pid = readPidFile(lease.lockDir, `${name}.pid`);
     if (pid) await killTree(pid, 5000);
   }
@@ -215,9 +216,6 @@ async function bootOnSlot(slot: string, worktree: string, branch: string): Promi
       `worktree=${worktree}`,
       `branch=${branch}`,
       `port=${ports.core}`,
-      `web_port=${ports.web}`,
-      `admin_port=${ports.admin}`,
-      `portal_port=${ports.portal}`,
       `slack=${withSlack ? "1" : "0"}`,
       "booting=1",
       `owner_pid=${process.pid}`,
@@ -245,7 +243,7 @@ async function bootOnSlot(slot: string, worktree: string, branch: string): Promi
         branch,
         callerEnv,
         watch: !opts["no-watch"] && callerEnv.DEV_INSTANCE_WATCH !== "0",
-        sandbox: opts.sandbox as "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37" | "auto",
+        sandbox: opts.sandbox as "local" | "smolmachines" | "e2b" | "agent37" | "auto",
         canaryChannel,
         strict: opts.strict,
         slack: withSlack,
@@ -305,14 +303,11 @@ function printSuccess(result: BootResult, branch: string): void {
       : `[ok] dev instance up -- slot ${result.slot} (browser only -- Slack off)`,
   );
   out(`   branch : ${branch}`);
-  out(`   portal : http://localhost:${ports.portal}  -> prod-style front door: the assistant at / and /admin`);
   out(
     `   core   : http://localhost:${ports.core}  (org=${orgId}, session_store=${meta.session_store}, run_store=${meta.run_store})`,
   );
   if (slackLive) out(`   slack  : @${result.handle}  -> mention it in example.slack.com to test`);
-  out(`   web    : http://localhost:${ports.portal}/  (direct: http://localhost:${ports.web})`);
-  out(`   admin  : http://localhost:${ports.portal}/admin/   (direct: http://localhost:${ports.web}/admin/)`);
-  out(`   logs   : ${lock}/{core,web,portal,supervisor}.log`);
+  out(`   logs   : ${lock}/{core,supervisor}.log`);
   out(`   status : dev status   |   diagnose: dev doctor   |   apply env/code changes: dev up (reloads in place)`);
   out(`   down   : dev down   (auto-reaped if this worktree is removed)`);
 }
@@ -447,7 +442,7 @@ async function cmdDown(): Promise<number> {
   await teardownLease(mine);
   const residue: string[] = [];
   for (const [name, port] of Object.entries(slotPorts(slot))) {
-    if (name === "supervisor" || name === "prodProxy") continue;
+    if (name === "supervisor") continue;
     const holders = portHolders(port);
     if (holders.length) residue.push(`port ${port} (${name}) still held by pid(s) ${holders.join(",")}`);
   }
@@ -546,7 +541,7 @@ async function cmdStatus(): Promise<number> {
       [
         String(r.slot).padEnd(7),
         state.padEnd(18),
-        `${ports.core}/${ports.web}/${ports.admin}/${ports.portal}`.padEnd(21),
+        String(ports.core).padEnd(21),
         age.padEnd(8),
         (r.mine ? "this" : "").padEnd(5),
         String(r.branch ?? "-").padEnd(28),
@@ -573,12 +568,8 @@ async function withMySupervisor<T>(fn: (sock: string, lease: LeaseInfo) => Promi
   return await fn(sock, mine);
 }
 
-const supervisorChildNames = (names: string[]): string[] => [
-  ...new Set(names.map((name) => (name === "web-ui" ? "web" : name))),
-];
-
 async function cmdRestart(): Promise<number> {
-  const children = supervisorChildNames(positionals.slice(1));
+  const children = [...new Set(positionals.slice(1))];
   const res = await withMySupervisor((sock) =>
     supervisorRequest(sock, "POST", "/restart", { children: children.length ? children : undefined }, 180_000),
   );
@@ -609,7 +600,7 @@ async function cmdLogs(): Promise<number> {
     out("no dev instance for this worktree.");
     return EXIT.ok;
   }
-  const names = positionals.length > 1 ? supervisorChildNames(positionals.slice(1)) : [...CHILD_ORDER, "supervisor"];
+  const names = positionals.length > 1 ? [...new Set(positionals.slice(1))] : [...CHILD_ORDER, "supervisor"];
   const files = names.map((n) => join(mine.lockDir, `${n}.log`)).filter((f) => existsSync(f));
   if (opts.follow) {
     const child = spawn("tail", ["-f", ...files], { stdio: "inherit" });
@@ -643,9 +634,14 @@ async function main(): Promise<number> {
       return await cmdLogs();
     case "doctor":
       return await runDoctor({ json: opts.json, fix: opts.fix, store, slack: withSlack });
+    case "ci":
+      if (positionals[1] === "up") return await ciUp();
+      if (positionals[1] === "down") return await ciDown();
+      console.error("usage: dev ci up|down");
+      return EXIT.usage;
     default:
       console.error(
-        "usage: dev [up|down|status|restart|canary|logs|doctor] [--json] [--force] [--rotate] [--strict] [--sandbox local|sprites|smolmachines|e2b|porter|agent37|auto] [--no-slack] [--no-watch] [--org id] [--fix]",
+        "usage: dev [up|down|status|restart|canary|logs|doctor|ci up|ci down] [--json] [--force] [--rotate] [--strict] [--sandbox local|smolmachines|e2b|agent37|auto] [--no-slack] [--no-watch] [--org id] [--fix]",
       );
       return EXIT.usage;
   }

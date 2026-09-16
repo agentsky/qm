@@ -18,7 +18,7 @@ export B_SLACK_EVENTS_PORT=8283
 
 cleanup() {
   set +e
-  node cli/bin/qm.ts dev --ci down
+  node scripts/dev/cli.ts ci down
   ARGA_TWIN_RUN_ID="$ARGA_TWIN_RUN_ID" node test/live-slack/arga-provision.ts down
   ARGA_TWIN_RUN_ID="$B_ARGA_TWIN_RUN_ID" node test/live-slack/arga-provision.ts down
 }
@@ -38,7 +38,7 @@ console.log(JSON.stringify([{
 ')"
 
 echo "== booting ci instance =="
-node cli/bin/qm.ts dev --ci up
+node scripts/dev/cli.ts ci up
 
 echo "== driving scenarios =="
 node scripts/dev/twin-multiws-check.ts

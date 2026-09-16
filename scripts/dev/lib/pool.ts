@@ -70,10 +70,6 @@ export function slotPorts(slot: string, basePort = Number(process.env.DEV_INSTAN
   const num = Number(slot.replace(/^pool/, ""));
   return {
     core: basePort + num,
-    web: basePort + 16 + num,
-    admin: basePort + 32 + num,
-    portal: basePort + 48 + num,
-    prodProxy: basePort + 64 + num,
     slackHealth: basePort + 80 + num,
     supervisor: basePort + 96 + num,
   };

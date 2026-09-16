@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { buildApp } from "../src/wiring.ts";
@@ -8,7 +8,7 @@ import type { Config } from "../src/config.ts";
 import type { TurnRequest } from "../src/types.ts";
 
 // Full application/tool/materializer path, with deterministic model commands and
-// the repo's host-backed Sprites transport. This does not test VM isolation.
+// the repo's host-backed sandbox fake. This does not test VM isolation.
 async function fixture(t: TestContext, config: Partial<Config> = {}) {
   const built = buildApp(testConfig({ memoryCapture: "off", ...config }));
   await built.config.hydrate?.();

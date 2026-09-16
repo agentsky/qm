@@ -57,10 +57,6 @@ test("slotPorts derive the full port block from the slot number", () => {
   const ports = slotPorts("pool3", 8080);
   assert.deepEqual(ports, {
     core: 8083,
-    web: 8099,
-    admin: 8115,
-    portal: 8131,
-    prodProxy: 8147,
     slackHealth: 8163,
     supervisor: 8179,
   });
@@ -186,7 +182,7 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   mkdirSync(join(worktree, ".git"));
   writeFileSync(
     join(worktree, ".env"),
-    "ANTHROPIC_API_KEY=from-dotenv\nCORE_SIGNING_SECRET=sekrit\nCAPABILITY_SECRET=cap\nPORTAL_IDENTITY_SECRET=identity\nCONNECTOR_SECRET_KEY=connector\nPORTAL_SESSION_SECRET=session\nBOTH=dotenv\n",
+    "ANTHROPIC_API_KEY=from-dotenv\nCORE_SIGNING_SECRET=sekrit\nCAPABILITY_SECRET=cap\nPORTAL_IDENTITY_SECRET=identity\nCONNECTOR_SECRET_KEY=connector\nBOTH=dotenv\n",
   );
   const liveEnv = join(worktree, "dev.env");
   writeFileSync(liveEnv, "ANTHROPIC_API_KEY=from-liveenv\nLIVE_ONLY=live\n");
@@ -288,7 +284,6 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   assert.equal(fromLiveEnv.env.CAPABILITY_SECRET, "cap");
   assert.equal(fromLiveEnv.env.PORTAL_IDENTITY_SECRET, "identity");
   assert.equal(fromLiveEnv.env.CONNECTOR_SECRET_KEY, "connector");
-  assert.equal(fromLiveEnv.env.PORTAL_SESSION_SECRET, "session");
   assert.equal(fromLiveEnv.anthropicKeySource, liveEnv);
 
   const fromShell = await assembleEnv({
@@ -330,7 +325,7 @@ test("dev security secrets are stable, complete, and distinct", () => {
   completeDevSecuritySecrets(first, "postgres://dev");
   completeDevSecuritySecrets(second, "postgres://dev");
   assert.deepEqual(first, second);
-  assert.equal(new Set(Object.values(first)).size, 5);
+  assert.equal(new Set(Object.values(first)).size, 4);
   assert.throws(
     () => completeDevSecuritySecrets({ CORE_SIGNING_SECRET: "same", CAPABILITY_SECRET: "same" }, "postgres://dev"),
     /must be distinct/,
@@ -418,25 +413,16 @@ test("supervised children share the selected dev org", () => {
       CODEX_HOME: "/tmp/home/.codex",
     },
     watch: false,
-    webUiBasePath: "/",
     slack: { botToken: "xoxb-test", appToken: "xapp-test" },
     sessionStore: "memory",
     runStore: "memory",
     databaseUrl: "",
     adminGrantsSeed: "",
-    coreSigningSecret: "",
-    portalSessionSecret: "secret",
-    portalDevPrincipal: "U1",
     sandboxEnv: {},
   };
   const specs = buildChildSpecs(inputs);
   assert.equal(specs.find((spec) => spec.name === "core")!.env.ORG_ID, "beta");
   assert.equal(specs.find((spec) => spec.name === "core")!.env.CODEX_AUTH_FILE, "/tmp/codex-auth.json");
-  for (const spec of specs.filter((spec) => spec.name !== "core")) {
-    assert.equal(spec.env.CODEX_AUTH_FILE, "");
-    assert.equal(spec.env.HOME, undefined);
-    assert.equal(spec.env.CODEX_HOME, undefined);
-  }
   for (const spec of specs) assert.equal(spec.env.CORE_ORG_ID, "beta");
   inputs.baseEnv = {};
   assert.equal(buildChildSpecs(inputs).find((spec) => spec.name === "core")!.env.ORG_ID, "acme");
@@ -448,14 +434,10 @@ test("child specs omit Slack env when no Slack tokens are supplied", () => {
     ports: slotPorts("pool1"),
     baseEnv: {},
     watch: false,
-    webUiBasePath: "/",
     sessionStore: "memory",
     runStore: "memory",
     databaseUrl: "",
     adminGrantsSeed: "",
-    coreSigningSecret: "",
-    portalSessionSecret: "secret",
-    portalDevPrincipal: "U1",
     sandboxEnv: {},
   };
   const core = buildChildSpecs(inputs).find((spec) => spec.name === "core")!;

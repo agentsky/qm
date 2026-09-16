@@ -60,34 +60,22 @@ jobs:
       - name: Core checks passed
         run: echo "Core typecheck and root test shards passed."
 
-  cli:
-    name: CLI
+  helm-k3s-e2e:
+    name: Helm k3s e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - name: Deploy the chart onto k3s
+        run: bash scripts/k3s-e2e.sh
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: |
-            cli/package-lock.json
-            package-lock.json
-      - name: Install, typecheck, unit + packaged-artifact + e2e tests
-        working-directory: cli
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-          npm run test:e2e
-      - name: Install root dependencies
-        run: npm ci
-      - name: Build the CLI package
-        working-directory: cli
-        run: npm run build
-      - name: Deployment stack contracts
-        run: |
-          npm run typecheck:contract
-          node --test "deploy/stacks/*/test/*.test.ts"
+          name: k3s-e2e-logs
+          path: .k3s-e2e-logs/
+          if-no-files-found: ignore
+          include-hidden-files: true
 
   coauthor-trailers:
     name: Co-author trailers
@@ -132,13 +120,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            plugins/web-ui/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: Install
-        run: |
-          npm ci
-          npm ci --prefix plugins/web-ui
+        run: npm ci
       - name: Formatting
         run: npm run format:check
       - name: Lint whole repo, incl. plugins
@@ -193,86 +177,3 @@ jobs:
           # Pinned vendor CLI under test; not shipped, so the repo's release-age guard is bypassed for this install only.
           npm i --no-save --no-audit --no-fund --min-release-age=0 memorable-cli@0.5.15
           node --test test/e2e/memorable-cli.e2e.test.ts
-
-  admin-plugin:
-    name: Admin plugin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: plugins/admin/package-lock.json
-      - name: Install, typecheck, test
-        working-directory: plugins/admin
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-      - name: Build and boot production image
-        run: bash scripts/smoke-surface-image.sh admin
-
-  web-ui-plugin:
-    name: Web UI plugin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            plugins/web-ui/package-lock.json
-      - name: Install core dependencies
-        run: npm ci
-      - name: Install, typecheck, test, build
-        working-directory: plugins/web-ui
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-          npm run build
-      - name: Build and boot production image
-        run: bash scripts/smoke-surface-image.sh web-ui
-
-  auth-plugin:
-    name: Auth plugin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: plugins/auth/package-lock.json
-      - name: Install, typecheck, test
-        working-directory: plugins/auth
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-      - name: Build and boot production image
-        run: bash scripts/smoke-surface-image.sh auth
-
-  portal-plugin:
-    name: Portal plugin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: plugins/portal/package-lock.json
-      - name: Install embedded auth dependencies
-        run: npm ci --prefix plugins/auth
-      - name: Install, typecheck, test
-        working-directory: plugins/portal
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-      - name: Build and boot production image
-        run: bash scripts/smoke-surface-image.sh portal

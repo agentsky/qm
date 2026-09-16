@@ -101,7 +101,6 @@ export function harnessToolOptions(opts: HarnessToolPlumbing, turn?: HarnessTurn
           readOnly: turn.readOnly,
           surfaceTools: turn.surfaceTools,
           surfaceName: turn.surfaceName,
-          credentialExecServices: turn.credentialExecServices,
         }
       : { surfaceTools: true, surfaceName: "slack" }),
   };

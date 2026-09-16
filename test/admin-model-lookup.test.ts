@@ -1,4 +1,4 @@
-import "./support/auto-fake-sprites.ts";
+import "./support/auto-fake-smolmachines.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildApp, serverDeps } from "../src/wiring.ts";

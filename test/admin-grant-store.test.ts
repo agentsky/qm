@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAdminGrantStore, createMemoryAdminGrantPersistence, grantKey } from "../src/admin/admin-grant-store.ts";
+import { createAdminService, parseAdminGrants } from "../src/admin/admin-service.ts";
+import { scopeId } from "../src/types.ts";
 
 test("grant store: add / list / revoke round-trip on (principal, scope, role)", async () => {
   const store = createAdminGrantStore();
@@ -43,4 +45,37 @@ test("grantKey is stable and collision-free across the triple", () => {
   assert.equal(grantKey("U1", "org:default-org", "org_admin"), grantKey("U1", "org:default-org", "org_admin"));
   assert.notEqual(grantKey("U1", "org:default-org", "org_admin"), grantKey("U1", "org:other", "org_admin"));
   assert.notEqual(grantKey("U1", "org:default-org", "org_admin"), grantKey("U2", "org:default-org", "org_admin"));
+});
+
+test("parseAdminGrants: unset keeps the seeded defaults (returns undefined)", () => {
+  assert.equal(parseAdminGrants(undefined, "default-org"), undefined);
+});
+
+test("parseAdminGrants: parses org_admin grants and skips malformed / removed-role entries", () => {
+  const grants = parseAdminGrants(
+    "U1:org_admin, U2:team_admin:team-eng, bad, U3:notarole, U5:org_admin",
+    "default-org",
+  );
+  assert.deepEqual(grants, [
+    { principalId: "U1", scopeId: scopeId("org", "default-org"), role: "org_admin" },
+    { principalId: "U5", scopeId: scopeId("org", "default-org"), role: "org_admin" },
+  ]);
+  assert.deepEqual(parseAdminGrants("", "default-org"), []);
+});
+
+test("ADMIN_GRANTS-seeded admins resolve and authorize org-wide; non-admins do not", async () => {
+  const store = createAdminGrantStore(createMemoryAdminGrantPersistence(), {
+    seed: parseAdminGrants("U1:org_admin", "default-org"),
+  });
+  const svc = createAdminService(store);
+  const u1 = svc.resolveActor("U1@default-org");
+  const u2 = svc.resolveActor("U2@default-org");
+  assert.ok(u1 && u2);
+  assert.equal(await svc.canAdminister(u1, scopeId("org", "default-org")), true);
+  assert.equal(await svc.canAdminister(u1, scopeId("channel", "eng")), true);
+  assert.equal(await svc.canAdminister(u2, scopeId("org", "default-org")), false);
+  assert.equal(
+    await svc.canAdminister(svc.resolveActor("admin-alice@default-org")!, scopeId("org", "default-org")),
+    false,
+  );
 });

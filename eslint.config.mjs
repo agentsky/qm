@@ -11,7 +11,6 @@ export default tseslint.config(
       "data/",
       "deploy/layers/",
       "docs/",
-      "plugins/web-ui/public/",
       ".claude/",
       ".context/",
     ],

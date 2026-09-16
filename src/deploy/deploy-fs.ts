@@ -1,10 +1,3 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
-
-export function bytes(data: string | Uint8Array): Uint8Array {
-  return typeof data === "string" ? Buffer.from(data, "utf8") : data;
-}
-
 function isGitMetadataComponent(part: string): boolean {
   const p = part
     .normalize("NFC")
@@ -32,28 +25,4 @@ export function normalizeRelPath(path: string): string {
     throw new Error(`invalid deploy path: ${path}`);
   }
   return parts.join("/");
-}
-
-export function posixJoin(base: string, rel: string): string {
-  return `${base.replace(/\/+$/, "")}/${rel.replace(/^\/+/, "")}`;
-}
-
-export async function readTree(
-  root: string,
-  opts: { tolerateMissing?: boolean } = {},
-): Promise<Array<{ path: string; data: Uint8Array }>> {
-  let entries;
-  try {
-    entries = await readdir(root, { recursive: true, withFileTypes: true });
-  } catch (e) {
-    if (opts.tolerateMissing && (e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
-  }
-  const out: Array<{ path: string; data: Uint8Array }> = [];
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const full = join(entry.parentPath, entry.name);
-    out.push({ path: relative(root, full).split(sep).join("/"), data: await readFile(full) });
-  }
-  return out;
 }

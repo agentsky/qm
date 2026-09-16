@@ -11,7 +11,7 @@ function ctxFor(sandbox: Partial<Sandbox>, provision: ToolContextDeps["provision
   const scope = scopeId("channel", "C1");
   const layers: WorkspaceLayer[] = [{ scopeId: scope, mountPath: "", mode: "rw" }];
   return createToolContext({
-    sandbox: { profile: { backend: "sprites" }, ...sandbox } as unknown as Sandbox,
+    sandbox: { profile: { backend: "smolmachines" }, ...sandbox } as unknown as Sandbox,
     provision,
     layers,
     commandPolicy: () => ({ mode: "denylist", rules: [] }),

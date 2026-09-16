@@ -1,33 +1,20 @@
 ---
 name: update-qm
-description: Update a QM source fork by merging upstream, or upgrade a package deployment dependency, and open a PR. Use when asked to "update qm", "sync from upstream", "pull in the latest qm".
+description: Update a QM source fork by merging upstream and open a PR. Use when asked to "update qm", "sync from upstream", "pull in the latest qm".
 ---
 
 # update-qm
 
-Determine whether this is a source fork or a package deployment before choosing the
-update procedure. Source forks may intentionally change core; preserve those changes.
-Contributing them upstream is optional.
+Confirm this is a source fork before choosing the update procedure. Source forks may
+intentionally change core; preserve those changes. Contributing them upstream is
+optional.
 
 ## Identify the checkout
 
 Run `git remote -v` and inspect the files and ancestry. If `origin` is `yc-software/qm`,
 this is upstream itself, not a downstream sync target. A different origin alone does
 not prove a source fork. A source fork has the QM source tree and shared upstream
-history; a package deployment has a deployment config and a pinned `@yc-software/qm`
-dependency. In a source fork with nested deployment directories, update source unless
-the request specifically targets a nested package pin.
-
-For a package deployment, work on a topic branch and install the requested release with
-`npm install --save-exact @yc-software/qm@<version>`. If no version is specified, resolve
-the current published release first. Review the package and lockfile diff, contract
-changes, and image overrides that could keep workloads on older images. Package updates
-do not refresh generated runbooks, skills, or vendored Terraform: compare the release's
-scaffold in a separate temporary directory and reconcile required changes without
-reinitializing or overwriting the existing deployment. Run the installed CLI's `check`,
-`doctor`, and `plan`, then open a PR in the deployment repository. Deploy only within
-the user's requested scope, following its deployment runbook and live checks. Do not
-add an upstream source remote or merge source into a package deployment.
+history.
 
 For a source fork, check the `upstream` remote points to `yc-software/qm`; if absent, add
 `git remote add upstream git@github.com:yc-software/qm`. Confirm shared history before
@@ -71,7 +58,7 @@ registries rather than enabling upstream workflows blindly.
 ## Verify before opening the PR
 
 Determine affected tests from the merged range and conflict resolutions. Run those
-locally plus typecheck and lint; include CLI tests for CLI or deployment-contract changes.
+locally plus typecheck and lint.
 Use the full local suite only when the affected scope cannot be determined; otherwise
 let CI run it. Install the locked dependencies first:
 
@@ -81,20 +68,18 @@ npm run typecheck
 npm run lint
 ```
 
-A sync can raise the deployment contract major, and the CLI rejects a layer config written
-for the old one. Check each organization layer with the in-tree CLI (`npm exec qm` does not
-work in a source checkout; the workspace symlink points at `cli/`, which is unbuilt):
+A sync can change the Helm chart's values. Render each organization layer against the
+merged chart and review the diff:
 
 ```bash
-node cli/bin/qm.ts check --config deploy/layers/<org>/qm.config.jsonc
+helm template qm deploy/helm -f deploy/layers/<org>/values.yaml
 ```
 
-For deployments outside the checkout, substitute their config paths. If a config reports
-an unsupported contract major, adapting it is part of the sync. Verify non-trivial behavior
-changes in a live dev instance before opening the PR, per AGENTS.md. Production service
-builds must use `--build-from` against this checkout (or deliberately published custom
-images); merging source does not update published runtime images. See the README source
-deployment procedure.
+For deployments outside the checkout, substitute their values paths. Adapting a values
+file the merged chart no longer accepts is part of the sync. Verify non-trivial behavior
+changes in a live dev instance before opening the PR, per AGENTS.md. Merging source does
+not update the published runtime images; deploy them with `scripts/deploy-helm.sh` or the
+release workflow. See the README source deployment procedure.
 
 ## Open the PR
 
@@ -119,8 +104,7 @@ commit (`gh pr merge --repo <source-fork> <pr> --merge`) or an ancestry-preservi
 fast-forward. Never squash or rebase a source-sync PR, even if the repository's usual
 shipping workflow uses squash: that loses the upstream merge and causes later syncs to
 revisit already-integrated history. If repository settings prohibit merge commits,
-resolve that policy before landing; do not fall back to squash. Package dependency PRs
-can follow the deployment repository's ordinary merge policy.
+resolve that policy before landing; do not fall back to squash.
 
 If the private fork deploys from `main`, merging this PR ships upstream's changes to production,
 so merge when someone can watch it.

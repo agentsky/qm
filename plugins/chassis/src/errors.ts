@@ -6,7 +6,3 @@ export function errMessage(e: unknown, fallback?: string): string {
   if ("message" in e && typeof e.message === "string") return e.message;
   return "Unknown error";
 }
-
-export function swallow(context: string, e: unknown): void {
-  console.warn(`[swallowed] ${context}: ${errMessage(e)}`);
-}

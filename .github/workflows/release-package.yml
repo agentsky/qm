@@ -19,18 +19,10 @@ jobs:
         include:
           - name: core
             dockerfile: deploy/core/Dockerfile
-          - name: web-ui
-            dockerfile: deploy/web-ui/Dockerfile
-          - name: admin
-            dockerfile: deploy/admin/Dockerfile
-          - name: portal
-            dockerfile: deploy/portal/Dockerfile
-          - name: auth
-            dockerfile: deploy/auth/Dockerfile
           - name: egress-proxy
             dockerfile: deploy/egress-proxy/Dockerfile
           - name: sandbox-base
-            dockerfile: fly/Dockerfile
+            dockerfile: deploy/sandbox-base/Dockerfile
             build-args: INSTALL_BROWSER_ENGINE=1
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd

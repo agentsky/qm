@@ -57,15 +57,15 @@ Two habits that keep task-focused changes from scarring the rest of the repo:
   change reaches.
 - **Verify non-trivial behavior changes in a live dev instance before opening a PR.**
   When a change is substantial enough that unit tests alone won't prove it works
-  end-to-end — new or changed agent behavior, or anything touching the Slack/web
-  surfaces, orchestrator, directory, or cron flows — boot this worktree with the
+  end-to-end — new or changed agent behavior, or anything touching the Slack
+  surface, orchestrator, directory, or cron flows — boot this worktree with the
   `/dev-instance` skill and exercise it through a browser against the configured Slack
   development workspace before opening a PR. Do this Slack QA in **Firefox**, never the
   Slack Mac app, and don't ask permission first — do it on your own; don't wait to be
   asked. Skip it for trivial refactors, docs, config, or pure-logic changes already
   covered by tests.
 - **Demo every front-end change in the PR.** Anything an operator or user sees
-  rendered — admin/web/portal UI, Slack surfaces, emails — ships with a way for a
+  rendered — Slack surfaces, emails — ships with a way for a
   reviewer to see the result without booting it. Prefer a link to a live demo app
   (e.g. the built UI served against a small mock API, published internally) so the
   reviewer can click around the real thing; note in the PR what's mocked. Fall back
@@ -77,11 +77,11 @@ Two habits that keep task-focused changes from scarring the rest of the repo:
 
 Before acting, run `git remote -v` and inspect the checkout. `origin` pointing at
 `yc-software/qm` identifies upstream. Another origin alone does not identify a source
-fork: a package deployment has its own `qm.config.jsonc` and pinned `@yc-software/qm`
-dependency, while a source fork carries the QM source tree and upstream ancestry.
+fork: a source fork carries the QM source tree and upstream ancestry.
 
-Package deployments customize config, tools, skills, and services without copying core.
-Source forks may modify core freely, including runtime, plugins, CLI, docs, and CI;
+A deployment is a Helm values overlay over the chart in `deploy/helm/`, which customizes
+config, tools, skills, and services without copying core. Source forks may modify core
+freely, including runtime, plugins, docs, and CI;
 contributing those changes upstream is optional. Keep private deployment material under
 `deploy/layers/<org>/` in private source forks or in a separate private deployment
 repository for public source checkouts. Secrets never enter Git. The README section
@@ -91,7 +91,7 @@ Create private source forks as standalone repositories outside GitHub's fork net
 Seed only `main` and set the default branch explicitly; never use `git push --mirror`.
 Use `update-qm` to merge source updates without rebasing published history or discarding
 intentional local changes. Land source-sync PRs without squashing or rebasing away their
-upstream ancestry. Package deployments update their dependency instead.
+upstream ancestry.
 
 In downstream repositories, pass `--repo` to every `gh` command so the upstream remote
 cannot redirect an operation. When contributing from private work, use `upstream-pr`

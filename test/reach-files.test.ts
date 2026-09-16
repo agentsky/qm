@@ -1,6 +1,6 @@
-import { installGlobalFakeSprites } from "./support/fake-sprites.ts";
+import { installGlobalFakeSmolmachines } from "./support/fake-smolmachines.ts";
 
-const fakeSprites = installGlobalFakeSprites();
+const fakeSmolmachines = installGlobalFakeSmolmachines();
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -44,7 +44,7 @@ describe("POST /v1/reach with files", () => {
   };
 
   before(async () => {
-    void fakeSprites;
+    void fakeSmolmachines;
     built = buildApp(testConfig({ signingSecret: SECRET }));
     await built.app.upsertDirectory([
       { principalId: "U-carol", displayName: "Carol", type: "internal" },

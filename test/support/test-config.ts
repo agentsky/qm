@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../../src/config.ts";
+import { FAKE_SMOLMACHINES_TOKEN } from "./fake-smolmachines.ts";
 
 export const TEST_CAPABILITY_SECRET = "test-capability-key-distinct-from-ingress-auth";
 
@@ -16,8 +17,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     turnLeaseWaitMs: 50,
     connectorSecretKey: "test-connector-key-distinct-from-ingress-auth",
     capabilitySecret: TEST_CAPABILITY_SECRET,
-    sandboxBackend: "sprites" as const,
-    spritesSandbox: { token: "test-token" },
+    sandboxBackend: "smolmachines" as const,
+    smolmachinesSandbox: { token: FAKE_SMOLMACHINES_TOKEN },
     dataDir: overrides.dataDir ?? mkdtempSync(join(tmpdir(), "qm-test-")),
     ...overrides,
   };

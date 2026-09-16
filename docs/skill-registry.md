@@ -37,18 +37,16 @@ PATCH  /v1/admin/skill-packs/:id          edit ref / subset / trustTier / config
 DELETE /v1/admin/skill-packs/:id          remove pack + archive its imported skills
 ```
 
-Or use the **Admin UI → Skill packs** tab (register form, browse with select-all/pick, import, remove).
-
 ## Registering a private pack
 
 First vend a read-only deploy token as an org service credential, then register the pack at a pinned
 commit.
 
-1. **Vend the deploy token** (Admin UI → Governance → Shared service credentials, or
-   `PUT /v1/admin/scopes/org:<org>/service-credentials`): create a credential with a slug like
+1. **Vend the deploy token** (`PUT /v1/admin/scopes/org:<org>/service-credentials`):
+   create a credential with a slug like
    `skills-repo-token` whose secret is a GitHub token with read access to the repository.
 
-2. **Register the pack** (Admin UI → Skill packs → Register, or `POST /v1/admin/skill-packs`):
+2. **Register the pack** (`POST /v1/admin/skill-packs`):
 
    ```json
    {

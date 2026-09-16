@@ -1,4 +1,4 @@
-import "./auto-fake-sprites.ts";
+import "./auto-fake-smolmachines.ts";
 import type { AddressInfo } from "node:net";
 import { buildApp, serverDeps } from "../../src/wiring.ts";
 import { createInsecureTestServer } from "../../src/api/server.ts";

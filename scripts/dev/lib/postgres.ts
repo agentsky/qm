@@ -52,17 +52,6 @@ export const adminGrantCount = async (_worktree: string, url: string): Promise<n
   return Number(count?.n ?? 0);
 };
 
-export const firstAdminPrincipal = async (_worktree: string, url: string): Promise<string> => {
-  const [table] = await pgQuery(url, "SELECT to_regclass($1) AS name", ["public.admin_grants"]);
-  if (!table?.name) return "";
-  const [row] = await pgQuery(
-    url,
-    "SELECT principal_id FROM admin_grants WHERE role = $1 ORDER BY created_at NULLS LAST, principal_id LIMIT 1",
-    ["org_admin"],
-  );
-  return String(row?.principal_id ?? "");
-};
-
 export interface LocalPostgres {
   url: string;
 }

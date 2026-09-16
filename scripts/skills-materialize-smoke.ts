@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpritesSandbox } from "../src/sandbox/sprites-sandbox.ts";
+import { createSmolmachinesSandbox } from "../src/sandbox/smolmachines-sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 import { loadConfig } from "../src/config.ts";
@@ -9,8 +9,8 @@ import { materializeSkillIndex, materializeSkillTree } from "../src/skills/mater
 import { computeBundleHash, type SkillBundle } from "../src/skills/skill-bundle-store.ts";
 import type { SkillFile, SkillResolution } from "../src/skills/skill-store.ts";
 
-if (!process.env.SPRITES_TOKEN) {
-  console.error("set SPRITES_TOKEN (mint one with `sprite login`)");
+if (!process.env.SMOLMACHINES_TOKEN) {
+  console.error("set SMOLMACHINES_TOKEN (create an API key in the smolmachines console)");
   process.exit(1);
 }
 
@@ -26,11 +26,11 @@ function assert(cond: unknown, msg: string): void {
 
 const scope = scopeId("personal", "qm-skills-smoke");
 const ws = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "skills-smoke-")));
-const sb = createSpritesSandbox(ws, loadConfig().spritesSandbox);
+const sb = createSmolmachinesSandbox(ws, loadConfig().smolmachinesSandbox);
 
 let h: Awaited<ReturnType<typeof sb.provision>> | undefined;
 try {
-  console.log("provisioning sprite for", scope, "…");
+  console.log("provisioning machine for", scope, "…");
   h = await sb.provision([{ scopeId: scope, mountPath: "", mode: "rw" }]);
   console.log("  sprite:", h.id, "coldStart:", h.coldStart);
 
@@ -95,6 +95,6 @@ try {
 
   console.log("\nALL SKILLS MATERIALIZE SMOKE CHECKS PASSED");
 } finally {
-  console.log("destroying smoke sprite …");
+  console.log("destroying smoke machine …");
   if (h) await sb.teardown(h, { destroy: true });
 }

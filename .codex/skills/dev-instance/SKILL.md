@@ -1,6 +1,6 @@
 ---
 name: dev-instance
-description: Run the current worktree as a production-shaped local dev instance — core, Slack, web UI, admin, portal, on a real Pi LLM + Postgres — reachable in Slack as your own bot. Each developer uses their own set of Slack apps from their own machine's pool store, so many worktrees (yours and a teammate's) can run reachable at once without colliding. Use when asked to /dev-instance, "spin this up so I can QA it in Slack", or "let me test your branch end to end".
+description: Run the current worktree as a production-shaped local dev instance — core and Slack, on a real Pi LLM + Postgres — reachable in Slack as your own bot. Each developer uses their own set of Slack apps from their own machine's pool store, so many worktrees (yours and a teammate's) can run reachable at once without colliding. Use when asked to /dev-instance, "spin this up so I can QA it in Slack", or "let me test your branch end to end".
 ---
 
 # dev-instance
@@ -8,7 +8,7 @@ description: Run the current worktree as a production-shaped local dev instance 
 `dev-instance` runs the current worktree as a full, production-shaped stack on your
 machine and makes it reachable in Slack as one of _your_ bots. It is the way to QA a
 branch end to end: real LLM turns, a real sandbox, a real local Postgres (empty by
-default; opt in to prod data), and the real Slack/web/admin surfaces.
+default; opt in to prod data), and the real Slack surface.
 
 Use the repo-root launcher (a thin wrapper over the TypeScript CLI in `scripts/dev/`;
 every command accepts `--json` for machine-readable output):
@@ -34,9 +34,6 @@ below), then spawns a **per-slot supervisor daemon** that owns the production-sh
 
 - core API + workers
 - Slack Socket Mode plugin (connected as the claimed app's bot)
-- web UI surface
-- admin surface
-- portal front door proxying `/web-ui/` and `/admin/`
 
 The supervisor restarts crashed children with backoff, waits for a port to actually free
 before respawning (no more EADDRINUSE), health-probes everything every 10s, and writes a
@@ -55,9 +52,6 @@ never returns leaves delivery unverified; `up` flags and rotates past that too.
 env, dev.env, and `.env`, diffs against what the children are running, and does a rolling
 restart + re-verification when anything changed (`--force` to restart regardless,
 `--rotate` to move to a different Slack app).
-
-Open the portal URL printed by the CLI. Direct web/admin URLs are also printed for
-debugging, but the portal URL is the prod-like path.
 
 ## Sandbox: local Docker by default
 
@@ -136,17 +130,12 @@ The dev instance should exercise the real system:
   `RUN_STORE=postgres`
 - production data is never copied into a dev instance
 - captured model context: request capture is on unless overridden, so you can read back what the model was actually sent
-- fast local edits: runs Node surfaces with `--watch` and serves the web UI through
-  Vite HMR on the dev surface instead of a separate browser build loop
+- fast local edits: runs core with `--watch`
 - stale pool recovery: `status` shows each deploy's start time and age; if all pool
   apps are taken, `up` reclaims a slot not started today or older than 4 hours
 - local admin seed: for a self-provisioned local DB, empty `admin_grants` are seeded
   from `DEV_INSTANCE_ADMIN_PRINCIPAL` or the local OS user; explicit `ADMIN_GRANTS`
   still wins
-- local portal auth: the launcher sets a localhost-only portal auth bypass, signing in
-  as `DEV_INSTANCE_ADMIN_PRINCIPAL`, the first `ADMIN_GRANTS` principal, the first
-  durable `org_admin` in Postgres, or the local OS user. Production portal auth remains
-  real OIDC.
 
 Only use escape hatches for deliberate wiring checks — this is how you ask for _less_ than
 the full real stack when a test doesn't need it:
@@ -172,10 +161,10 @@ self-API calls can reach your local core. None of that runs on the default local
 
 ## After Startup
 
-Report the slot, portal URL, Slack handle, and log directory. To test Slack-specific
-behavior, DM the printed `@<handle>` (on Alice's machine that's one of `@bot1 … @bot10`)
-in `example.slack.com`; for admin and web behavior, open the printed portal URL. Tear down
-with `bash scripts/dev-instance.sh down` when QA is finished.
+Report the slot, core URL, Slack handle, and log directory. To test the agent's behavior,
+DM the printed `@<handle>` (on Alice's machine that's one of `@bot1 … @bot10`) in
+`example.slack.com`. Tear down with `bash scripts/dev-instance.sh down` when QA is
+finished.
 
 ## Troubleshooting
 

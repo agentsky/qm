@@ -7,7 +7,7 @@ import { ensureDockerDaemon } from "./postgres.ts";
 import { bestEffortValue, sleep } from "./util.ts";
 
 export interface SandboxResolution {
-  backend: "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37";
+  backend: "local" | "smolmachines" | "e2b" | "agent37";
   env: Record<string, string>;
   detail: string;
   publicApiUrl: string | null;
@@ -22,20 +22,24 @@ async function localImagePresent(image: string): Promise<boolean> {
   return (await run("docker", ["image", "inspect", image], { timeoutMs: 30_000 })).code === 0;
 }
 
+const SANDBOX_CHOICES = ["local", "smolmachines", "e2b", "agent37"] as const;
+
 export async function resolveSandbox(opts: {
   worktree: string;
-  requested: "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37" | "auto";
+  requested: "local" | "smolmachines" | "e2b" | "agent37" | "auto";
   corePort: number;
   lock: string;
   baseEnv: Record<string, string>;
   log: (msg: string) => void;
 }): Promise<SandboxResolution> {
   const warnings: string[] = [];
-  let backend = opts.requested;
-  if (backend === "auto") backend = "local";
+  const backend = opts.requested === "auto" ? "local" : opts.requested;
+  if (!SANDBOX_CHOICES.includes(backend)) {
+    throw new Error(`--sandbox ${String(backend)} is not one of ${SANDBOX_CHOICES.join(", ")}, or auto`);
+  }
   if (backend === "local" && !worktreeSupportsLocalSandbox(opts.worktree)) {
     throw new Error(
-      "this worktree's code has no local sandbox backend (src/sandbox/local-sandbox.ts missing) -- use --sandbox sprites",
+      "this worktree's code has no local sandbox backend (src/sandbox/local-sandbox.ts missing) -- use --sandbox e2b",
     );
   }
 
@@ -120,102 +124,33 @@ export async function resolveSandbox(opts: {
     };
   }
 
-  if (backend === "agent37") {
-    const apiKey = opts.baseEnv.AGENT37_API_KEY;
-    if (!apiKey)
-      throw new Error(
-        "--sandbox agent37 requires AGENT37_API_KEY in the environment (mint one at https://agent37.com/dashboard/cloud/api-keys)",
-      );
-    let apiUrl = opts.baseEnv.PUBLIC_API_URL || null;
-    if (!apiUrl) {
-      apiUrl = await startQuickTunnel(opts.corePort, opts.lock, opts.log);
-      if (!apiUrl)
-        warnings.push(
-          "cloudflared tunnel didn't come up -- agent self-API (crons/sends) won't be reachable from the sandbox",
-        );
-    }
-    const env: Record<string, string> = {
-      SANDBOX_BACKEND: "agent37",
-      AGENT37_API_KEY: apiKey,
-      AGENT37_NAME_PREFIX: opts.baseEnv.AGENT37_NAME_PREFIX || "qmdev",
-    };
-    if (opts.baseEnv.AGENT37_API_BASE_URL) env.AGENT37_API_BASE_URL = opts.baseEnv.AGENT37_API_BASE_URL;
-    if (opts.baseEnv.AGENT37_TEMPLATE) env.AGENT37_TEMPLATE = opts.baseEnv.AGENT37_TEMPLATE;
-    if (opts.baseEnv.AGENT37_EGRESS_PROXY_URL) env.AGENT37_EGRESS_PROXY_URL = opts.baseEnv.AGENT37_EGRESS_PROXY_URL;
-    else
-      warnings.push(
-        "AGENT37_EGRESS_PROXY_URL unset -- agent37 sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
-      );
-    if (apiUrl) env.PUBLIC_API_URL = apiUrl;
-    return { backend: "agent37", env, detail: "Agent37 (api.agent37.com)", publicApiUrl: apiUrl, warnings };
-  }
-
-  if (backend === "porter") {
-    const porterToken = opts.baseEnv.PORTER_DEPLOY_API_TOKEN;
-    const projectId = opts.baseEnv.PORTER_DEPLOY_PROJECT_ID;
-    const clusterId = opts.baseEnv.PORTER_DEPLOY_CLUSTER_ID;
-    if (!porterToken || !projectId || !clusterId)
-      throw new Error(
-        "--sandbox porter requires PORTER_DEPLOY_API_TOKEN, PORTER_DEPLOY_PROJECT_ID, and PORTER_DEPLOY_CLUSTER_ID in the environment (create an API token in the Porter dashboard)",
-      );
-    let porterApiUrl = opts.baseEnv.PUBLIC_API_URL || null;
-    if (!porterApiUrl) {
-      porterApiUrl = await startQuickTunnel(opts.corePort, opts.lock, opts.log);
-      if (!porterApiUrl)
-        warnings.push(
-          "cloudflared tunnel didn't come up -- agent self-API (crons/sends) won't be reachable from the sandbox",
-        );
-    }
-    const env: Record<string, string> = {
-      SANDBOX_BACKEND: "porter",
-      PORTER_DEPLOY_API_TOKEN: porterToken,
-      PORTER_DEPLOY_PROJECT_ID: projectId,
-      PORTER_DEPLOY_CLUSTER_ID: clusterId,
-      PORTER_SANDBOX_NAME_PREFIX: opts.baseEnv.PORTER_SANDBOX_NAME_PREFIX || "qmdev",
-    };
-    if (opts.baseEnv.PORTER_DEPLOY_URL) env.PORTER_DEPLOY_URL = opts.baseEnv.PORTER_DEPLOY_URL;
-    if (opts.baseEnv.PORTER_SANDBOX_IMAGE) env.PORTER_SANDBOX_IMAGE = opts.baseEnv.PORTER_SANDBOX_IMAGE;
-    if (opts.baseEnv.PORTER_SANDBOX_EGRESS_PROXY_URL)
-      env.PORTER_SANDBOX_EGRESS_PROXY_URL = opts.baseEnv.PORTER_SANDBOX_EGRESS_PROXY_URL;
-    else
-      warnings.push(
-        "PORTER_SANDBOX_EGRESS_PROXY_URL unset -- porter sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
-      );
-    if (porterApiUrl) env.PUBLIC_API_URL = porterApiUrl;
-    return {
-      backend: "porter",
-      env,
-      detail: `Porter (project ${projectId}, cluster ${clusterId})`,
-      publicApiUrl: porterApiUrl,
-      warnings,
-    };
-  }
-
-  const token = opts.baseEnv.SPRITES_TOKEN;
-  if (!token)
-    throw new Error("--sandbox sprites requires SPRITES_TOKEN in the environment (mint one with `sprite login`)");
-  let publicApiUrl = opts.baseEnv.PUBLIC_API_URL || null;
-  if (!publicApiUrl) {
-    publicApiUrl = await startQuickTunnel(opts.corePort, opts.lock, opts.log);
-    if (!publicApiUrl)
+  const apiKey = opts.baseEnv.AGENT37_API_KEY;
+  if (!apiKey)
+    throw new Error(
+      "--sandbox agent37 requires AGENT37_API_KEY in the environment (mint one at https://agent37.com/dashboard/cloud/api-keys)",
+    );
+  let apiUrl = opts.baseEnv.PUBLIC_API_URL || null;
+  if (!apiUrl) {
+    apiUrl = await startQuickTunnel(opts.corePort, opts.lock, opts.log);
+    if (!apiUrl)
       warnings.push(
         "cloudflared tunnel didn't come up -- agent self-API (crons/sends) won't be reachable from the sandbox",
       );
   }
   const env: Record<string, string> = {
-    SANDBOX_BACKEND: "sprites",
-    SPRITES_TOKEN: token,
-    SPRITES_NAME_PREFIX: opts.baseEnv.SPRITES_NAME_PREFIX || "qmdev",
+    SANDBOX_BACKEND: "agent37",
+    AGENT37_API_KEY: apiKey,
+    AGENT37_NAME_PREFIX: opts.baseEnv.AGENT37_NAME_PREFIX || "qmdev",
   };
-  // Force-through egress is opt-in in dev: set it only if the caller supplied a proxy URL.
-  // Without it the sandbox has open egress — warn so a "proxy ON" QA run isn't silently toothless.
-  if (opts.baseEnv.SPRITES_EGRESS_PROXY_URL) env.SPRITES_EGRESS_PROXY_URL = opts.baseEnv.SPRITES_EGRESS_PROXY_URL;
+  if (opts.baseEnv.AGENT37_API_BASE_URL) env.AGENT37_API_BASE_URL = opts.baseEnv.AGENT37_API_BASE_URL;
+  if (opts.baseEnv.AGENT37_TEMPLATE) env.AGENT37_TEMPLATE = opts.baseEnv.AGENT37_TEMPLATE;
+  if (opts.baseEnv.AGENT37_EGRESS_PROXY_URL) env.AGENT37_EGRESS_PROXY_URL = opts.baseEnv.AGENT37_EGRESS_PROXY_URL;
   else
     warnings.push(
-      "SPRITES_EGRESS_PROXY_URL unset -- sprites sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
+      "AGENT37_EGRESS_PROXY_URL unset -- agent37 sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
     );
-  if (publicApiUrl) env.PUBLIC_API_URL = publicApiUrl;
-  return { backend: "sprites", env, detail: "Fly Sprites (api.sprites.dev)", publicApiUrl, warnings };
+  if (apiUrl) env.PUBLIC_API_URL = apiUrl;
+  return { backend: "agent37", env, detail: "Agent37 (api.agent37.com)", publicApiUrl: apiUrl, warnings };
 }
 
 async function startQuickTunnel(corePort: number, lock: string, log: (msg: string) => void): Promise<string | null> {

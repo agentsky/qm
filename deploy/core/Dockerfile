@@ -17,7 +17,6 @@ RUN npm ci --omit=dev && npm audit --omit=dev --audit-level=moderate \
   && rm -rf /root/.npm /tmp/node-compile-cache
 
 COPY src ./src
-COPY cli/templates/slack-manifest.json ./cli/templates/slack-manifest.json
 COPY skills-seed ./skills-seed
 COPY plugins/onboarding ./plugins/onboarding
 COPY plugins/chassis ./plugins/chassis

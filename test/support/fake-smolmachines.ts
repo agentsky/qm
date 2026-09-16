@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 export interface SmolCall {
   method: string;
   path: string;
+  machine?: string | null;
   script?: string;
 }
 
@@ -31,6 +32,7 @@ export interface FakeSmolmachines {
 }
 
 export const FAKE_SMOLMACHINES_TOKEN = "test-token";
+const API_ORIGIN = "https://api.smolmachines.com";
 
 export function installFakeSmolmachines(): FakeSmolmachines {
   const root = mkdtempSync(join(tmpdir(), "fake-smol-"));
@@ -136,8 +138,12 @@ export function installFakeSmolmachines(): FakeSmolmachines {
       const hostPath = abs.replace(/^\/root/, m.home);
       if (method === "PUT") {
         m.state = "Running";
-        mkdirSync(dirname(hostPath), { recursive: true });
-        writeFileSync(hostPath, toBuf(init?.body));
+        try {
+          mkdirSync(dirname(hostPath), { recursive: true });
+          writeFileSync(hostPath, toBuf(init?.body));
+        } catch (e) {
+          return new Response(String(e), { status: 409 });
+        }
         return Response.json({ path: abs, size: toBuf(init?.body).length });
       }
       if (method === "GET") {
@@ -158,6 +164,7 @@ export function installFakeSmolmachines(): FakeSmolmachines {
         const argv = Array.isArray(body.command) ? body.command : ["sh", "-c", body.command ?? ""];
         const script = argv[argv.length - 1] ?? "";
         calls[calls.length - 1]!.script = script;
+        calls[calls.length - 1]!.machine = m.name;
         return runExec(m, script, body.stdin);
       }
       if (sub[2] === "start") {
@@ -200,4 +207,20 @@ export function installFakeSmolmachines(): FakeSmolmachines {
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+let globalFake: FakeSmolmachines | null = null;
+
+export function installGlobalFakeSmolmachines(): FakeSmolmachines {
+  if (globalFake) return globalFake;
+  const fake = installFakeSmolmachines();
+  const realFetch = globalThis.fetch;
+  const patched: typeof fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.startsWith(`${API_ORIGIN}/`)) return fake.fetchImpl(input, init);
+    return realFetch(input, init);
+  };
+  (globalThis as { fetch: typeof fetch }).fetch = patched;
+  globalFake = fake;
+  return fake;
 }

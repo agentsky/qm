@@ -1,4 +1,4 @@
-import { fakeSprites } from "./support/auto-fake-sprites.ts";
+import { fakeSmolmachines } from "./support/auto-fake-smolmachines.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -188,16 +188,16 @@ test("a scratch turn runs on a separate volumeless box with NO capability tokens
   assert.equal(scratch.reply, "(exit 1)", "the scratch box is credential-free — no capability token");
 
   assert.ok(
-    fakeSprites.names().some((n) => n.startsWith("qm-personal-u1-")),
-    "the scoped box is the scope's durable sprite",
+    fakeSmolmachines.names().some((n) => n.startsWith("qm-personal-u1-")),
+    "the scoped box is the scope's durable machine",
   );
   assert.ok(
-    fakeSprites.calls.some((c) => /\/sprites\/qm-scratch-[^/]+\/exec$/.test(c.path)),
-    "the scratch run landed on a separate throwaway sprite",
+    fakeSmolmachines.calls.some((c) => c.path.endsWith("/exec") && c.machine?.startsWith("qm-scratch-")),
+    "the scratch run landed on a separate throwaway machine",
   );
   assert.ok(
-    !fakeSprites.names().some((n) => n.startsWith("qm-scratch-")),
-    "the scratch sprite is destroyed at release",
+    !fakeSmolmachines.names().some((n) => n.startsWith("qm-scratch-")),
+    "the scratch machine is destroyed at release",
   );
 });
 
@@ -315,7 +315,7 @@ test("migrateComputer gates on approval, validates the target, bounds the copy, 
   await assert.rejects(unapproved.ctx.migrateComputer("modal"), (e: Error) => e.name === "NeedsApproval");
 
   const { ctx } = routingCtx({ ...base, authorizeCommand: (c: string) => c === 'computer:"migrate" to:"modal"' });
-  await assert.rejects(ctx.migrateComputer("sprites"), /not an available backend here.*e2b, modal/);
+  await assert.rejects(ctx.migrateComputer("agent37"), /not an available backend here.*e2b, modal/);
   const moved = await ctx.migrateComputer("modal");
   assert.deepEqual(moved, { from: "e2b", to: "modal" });
   assert.deepEqual(migrated, [
@@ -329,10 +329,10 @@ test("migrateComputer rewords the operator-only force refusal and audits failure
   const audited: string[] = [];
   const runner = {
     migrateScope: async () => {
-      throw new Error("cannot migrate to sprites: it has no process sessions. Migrate with force to accept the loss.");
+      throw new Error("cannot migrate to agent37: it has no process sessions. Migrate with force to accept the loss.");
     },
     listRoutes: async () => [],
-    availableBackends: () => ["e2b", "sprites"],
+    availableBackends: () => ["e2b", "agent37"],
     defaultBackend: "e2b",
   };
   const { ctx } = routingCtx({
@@ -341,8 +341,8 @@ test("migrateComputer rewords the operator-only force refusal and audits failure
     authorizeCommand: () => true,
     auditLog: { record: (e: { action: string }) => audited.push(e.action) } as never,
   });
-  await assert.rejects(ctx.migrateComputer("sprites"), /An operator can force this from the admin console\./);
-  await assert.rejects(ctx.migrateComputer("sprites"), (e: Error) => !/Migrate with force/.test(e.message));
+  await assert.rejects(ctx.migrateComputer("agent37"), /An operator can force this from the admin console\./);
+  await assert.rejects(ctx.migrateComputer("agent37"), (e: Error) => !/Migrate with force/.test(e.message));
   assert.deepEqual(audited, ["sandbox_routes.migrate_failed", "sandbox_routes.migrate_failed"]);
 });
 

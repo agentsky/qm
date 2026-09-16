@@ -61,16 +61,7 @@ test("projected sandbox results require exact successful execution evidence", ()
 });
 
 test("every provider has its own parallel execution scenario", () => {
-  assert.deepEqual(sandboxProviders.toSorted(), [
-    "agent37",
-    "aws",
-    "e2b",
-    "local",
-    "modal",
-    "porter",
-    "smolmachines",
-    "sprites",
-  ]);
+  assert.deepEqual(sandboxProviders.toSorted(), ["agent37", "e2b", "local", "modal", "smolmachines"]);
   assert.equal(sandboxProviderScenarios.length, sandboxProviders.length);
   assert.ok(sandboxProviderScenarios.every((s) => s.lane === "parallel" && s.tags?.includes("provider-execution")));
 });
@@ -118,9 +109,9 @@ for (const failExecution of [false, true]) {
           return this;
         },
         listSandboxes: async () => ({
-          providers: [{ name: "sprites", actions: ["create", "retire"] }],
+          providers: [{ name: "local", actions: ["create", "retire"] }],
           sandboxes: actions.some((a) => a.action === "create")
-            ? [{ id: "box", backend: "sprites", name: "owned-test-box" }]
+            ? [{ id: "box", backend: "local", name: "owned-test-box" }]
             : [],
         }),
         waitForChannelMembership: async (channel: string, actor: string) => {
@@ -130,12 +121,12 @@ for (const failExecution of [false, true]) {
         },
         manageSandbox: async (_scope: string, body: Record<string, unknown>) => {
           actions.push(body);
-          return { id: "box", backend: "sprites" };
+          return { id: "box", backend: "local" };
         },
         findSessionByThread: async () => ({ id: "session", entries: evidence("box", expected) }),
       },
     } as unknown as Ctx;
-    const run = sandboxProviderScenarios.find((s) => s.name === "sandbox-execute-sprites")!.run(ctx);
+    const run = sandboxProviderScenarios.find((s) => s.name === "sandbox-execute-local")!.run(ctx);
     if (failExecution) await assert.rejects(run, /agent could not execute/);
     else await run;
     assert.deepEqual(actions.slice(-2), [
@@ -146,21 +137,14 @@ for (const failExecution of [false, true]) {
 }
 
 test("explicit provider selection retains strict coverage without treating deferred providers as failed skips", () => {
-  const selected = selectSandboxProviderScenarios("sprites,aws,local,smolmachines,e2b,modal");
+  const selected = selectSandboxProviderScenarios("local,smolmachines,e2b,modal");
   assert.deepEqual(
     selected.map((s) => s.name),
-    [
-      "sandbox-execute-sprites",
-      "sandbox-execute-aws",
-      "sandbox-execute-local",
-      "sandbox-execute-smolmachines",
-      "sandbox-execute-e2b",
-      "sandbox-execute-modal",
-    ],
+    ["sandbox-execute-local", "sandbox-execute-smolmachines", "sandbox-execute-e2b", "sandbox-execute-modal"],
   );
-  assert.equal(selectSandboxProviderScenarios("all").length, 8);
+  assert.equal(selectSandboxProviderScenarios("all").length, 5);
   assert.deepEqual(selectSandboxProviderScenarios(undefined), []);
-  for (const value of ["", "sprites,", "typo", "sprites,sprites", "all,sprites", "constructor", "__proto__"])
+  for (const value of ["", "local,", "typo", "local,local", "all,local", "constructor", "__proto__"])
     assert.throws(() => selectSandboxProviderScenarios(value));
 });
 
